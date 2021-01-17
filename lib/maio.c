@@ -548,12 +548,13 @@ int maio_post_tx_page(void *unused)
 		unsigned len, size;
 		void *kaddr = uaddr2addr(uaddr);
 
+		advance_tx_ring(qp);
+
 		if (unlikely(IS_ERR_OR_NULL(kaddr))) {
 			trace_printk("Invalid kaddr %llx from user %llx\n", (u64)kaddr, (u64)uaddr);
 			pr_err("Invalid kaddr %llx from user %llx\n", (u64)kaddr, (u64)uaddr);
 			continue;
 		}
-		advance_tx_ring(qp);
 
 		if (unlikely(!is_maio_page(virt_to_page(kaddr)))) {
 #if 0
@@ -595,6 +596,9 @@ int maio_post_tx_page(void *unused)
 		skb->dev = maio_devs[default_dev_idx];
 		//get_page(virt_to_page(kaddr));
 		skb_batch[cnt++] = skb;
+
+		if (cnt > 64)
+			break;
 	}
 	maio_xmit(maio_devs[default_dev_idx], skb_batch, cnt);
 
@@ -602,7 +606,7 @@ int maio_post_tx_page(void *unused)
 	tx_counter = qp->tx_counter;
 
 	//TODO: return #sent
-	return 0;
+	return cnt;
 }
 
 #define MAIO_TX_KBUFF_SZ	64

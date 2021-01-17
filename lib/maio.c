@@ -653,7 +653,7 @@ static int maio_post_tx_task(void *unused)
 {
 
         while (!kthread_should_stop()) {
-		while (maio_post_tx_page()); // XMIT as long as there is work to be done.
+		while (maio_post_tx_page(unused)); // XMIT as long as there is work to be done.
 
                 set_current_state(TASK_UNINTERRUPTIBLE);
                 if (!kthread_should_stop()) {
@@ -698,8 +698,10 @@ static inline ssize_t maio_enable(struct file *file, const char __user *buf,
 	else
 		return -EINVAL;
 
-	if (create_threads())
+	if (create_threads()) {
+		pr_err("ERROR: Failed to create TX threads\n!!!");
 		return -ENOMEM;
+	}
 
 	return size;
 }
@@ -972,52 +974,52 @@ static int maio_map_open(struct inode *inode, struct file *file)
         return single_open(file, maio_map_show, PDE_DATA(inode));
 }
 
-static const struct proc_ops maio_mtrx_ops = {
-        .proc_open      = maio_map_open,
-        .proc_read      = seq_read,
-        .proc_lseek     = seq_lseek,
-        .proc_release   = single_release,
-        .proc_write     = maio_mtrx_write,
+static const struct file_operations maio_mtrx_ops = {
+        .open      = maio_map_open,
+        .read      = seq_read,
+        .llseek     = seq_lseek,
+        .release   = single_release,
+        .write     = maio_mtrx_write,
 };
 
-static const struct proc_ops maio_page_0_ops = {
-        .proc_open      = maio_map_open, /* TODO: Change to func that pirnts the mapped user pages */
-        .proc_read      = seq_read,
-        .proc_lseek     = seq_lseek,
-        .proc_release   = single_release,
-        .proc_write     = maio_pages_0_write,
+static const struct file_operations maio_page_0_ops = {
+        .open      = maio_map_open, /* TODO: Change to func that pirnts the mapped user pages */
+        .read      = seq_read,
+        .llseek     = seq_lseek,
+        .release   = single_release,
+        .write     = maio_pages_0_write,
 };
 
-static const struct proc_ops maio_page_ops = {
-        .proc_open      = maio_map_open, /* TODO: Change to func that pirnts the mapped user pages */
-        .proc_read      = seq_read,
-        .proc_lseek     = seq_lseek,
-        .proc_release   = single_release,
-        .proc_write     = maio_pages_write,
+static const struct file_operations maio_page_ops = {
+        .open      = maio_map_open, /* TODO: Change to func that pirnts the mapped user pages */
+        .read      = seq_read,
+        .llseek     = seq_lseek,
+        .release   = single_release,
+        .write     = maio_pages_write,
 };
 
-static const struct proc_ops maio_map_ops = {
-        .proc_open      = maio_map_open, /* TODO: Change to func that pirnts the mapped user pages */
-        .proc_read      = seq_read,
-        .proc_lseek     = seq_lseek,
-        .proc_release   = single_release,
-        .proc_write     = maio_map_write,
+static const struct file_operations maio_map_ops = {
+        .open      = maio_map_open, /* TODO: Change to func that pirnts the mapped user pages */
+        .read      = seq_read,
+        .llseek     = seq_lseek,
+        .release   = single_release,
+        .write     = maio_map_write,
 };
 
-static const struct proc_ops maio_enable_ops = {
-        .proc_open      = maio_enable_open,
-        .proc_read      = seq_read,
-        .proc_lseek     = seq_lseek,
-        .proc_release   = single_release,
-        .proc_write     = maio_enable_write,
+static const struct file_operations maio_enable_ops = {
+        .open      = maio_enable_open,
+        .read      = seq_read,
+        .llseek     = seq_lseek,
+        .release   = single_release,
+        .write     = maio_enable_write,
 };
 
-static const struct proc_ops maio_tx_ops = {
-        .proc_open      = maio_map_open,
-        .proc_read      = seq_read,
-        .proc_lseek     = seq_lseek,
-        .proc_release   = single_release,
-        .proc_write     = maio_tx_write,
+static const struct file_operations maio_tx_ops = {
+        .open      = maio_map_open,
+        .read      = seq_read,
+        .llseek     = seq_lseek,
+        .release   = single_release,
+        .write     = maio_tx_write,
 };
 
 static inline void proc_init(void)

@@ -1109,8 +1109,10 @@ static int free_tail_pages_check(struct page *head_page, struct page *page)
 		break;
 	}
 
-	if (unlikely(is_maio_page(page)))
-		bad_page(page, "Freeing MAIO Pages");
+	if (unlikely(is_maio_page(page))) {
+		bad_page(page, "Freeing MAIO Pages", 0);
+		goto out;
+	}
 
 	if (unlikely(!PageTail(page))) {
 		bad_page(page, "PageTail not set", 0);

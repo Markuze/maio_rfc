@@ -531,10 +531,11 @@ unlock:
 #define tx_ring_entry(qp) 	(qp)->tx_ring[(qp)->tx_counter & ((qp)->tx_sz -1)]
 #define advance_tx_ring(qp)	(qp)->tx_ring[(qp)->tx_counter++ & ((qp)->tx_sz -1)] = 0
 
+#define TX_BATCH_SIZE	64
 int maio_post_tx_page(void *unused)
 {
 	struct io_md *md;
-	struct sk_buff *skb_batch[64];
+	struct sk_buff *skb_batch[TX_BATCH_SIZE];
 	struct percpu_maio_qp *qp = this_cpu_ptr(&maio_qp);
 	int copy = 0, cnt = 0;
 	u64 uaddr = 0;
@@ -542,6 +543,7 @@ int maio_post_tx_page(void *unused)
 
 	/* NOTICE: This works only for a single TX - no concurency!!! AND a single TX Ring */
 	(qp)->tx_counter = tx_counter;
+	trace_printk("[%d]Starting <%d>\n",smp_processor_id(), tx_counter & ((qp)->tx_sz -1));
 
 	while ((uaddr = tx_ring_entry(qp))) {
 		struct sk_buff *skb;
@@ -583,10 +585,14 @@ int maio_post_tx_page(void *unused)
 
 		len 	= md->len + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 		size 	= 0x800 - ((u64)kaddr & (0x800 -1));
-		trace_debug("Sending kaddr %llx [%d]from user %llx: len %d[size %d] poison %0x\n",
+/*
+		trace_printk("Sending kaddr %llx [%d]from user %llx: len %d[size %d] poison %0x\n",
 				(u64)kaddr, page_ref_count(virt_to_page(kaddr)),
 				(u64)uaddr, md->len, size, md->poison);
-
+*/
+		trace_printk("Sending %llx [%d]from user %llx [%d]\n",
+				(u64)kaddr, page_ref_count(virt_to_page(kaddr)),
+				(u64)uaddr, cnt);
 		if (unlikely(((uaddr & (PAGE_SIZE -1)) + len) > PAGE_SIZE)) {
 			pr_err("Buffer to Long [%llx] len %u klen = %u\n", uaddr, md->len, len);
 			continue;
@@ -597,13 +603,15 @@ int maio_post_tx_page(void *unused)
 		//get_page(virt_to_page(kaddr));
 		skb_batch[cnt++] = skb;
 
-		if (cnt > 64)
+		if (cnt >= TX_BATCH_SIZE)
 			break;
 	}
-	maio_xmit(maio_devs[default_dev_idx], skb_batch, cnt);
+	trace_printk("%d: Sending %d buffers. counter %d\n", smp_processor_id(), cnt, tx_counter);
+	if (cnt)
+		copy = maio_xmit(maio_devs[default_dev_idx], skb_batch, cnt);
 
-	trace_debug("%d: Sent buffers. counter %d\n", smp_processor_id(), tx_counter);
 	tx_counter = qp->tx_counter;
+	trace_printk("%d: Sending %d buffers. rc %d\n", smp_processor_id(), cnt, copy);
 
 	//TODO: return #sent
 	return cnt;
@@ -645,7 +653,12 @@ static inline ssize_t maio_tx(struct file *file, const char __user *buf,
 		prev = smp_processor_id();
 	}
 
-	wake_up_process(maio_tx_thread);
+	if (maio_tx_thread->state & TASK_NORMAL) {
+		val = wake_up_process(maio_tx_thread);
+		trace_printk("[%d]wake up thread[state %0lx][%s]\n", smp_processor_id(), maio_tx_thread->state, val ? "WAKING":"UP");
+	} else {
+		trace_printk("[%d]thread running[state %0lx]\n", smp_processor_id(), maio_tx_thread->state);
+	}
 	//maio_post_tx_page();
 	return size;
 }
@@ -653,8 +666,10 @@ static int maio_post_tx_task(void *unused)
 {
 
         while (!kthread_should_stop()) {
+		trace_printk("[%d]Running...\n", smp_processor_id());
 		while (maio_post_tx_page(unused)); // XMIT as long as there is work to be done.
 
+		trace_printk("[%d]sleeping...\n", smp_processor_id());
                 set_current_state(TASK_UNINTERRUPTIBLE);
                 if (!kthread_should_stop()) {
                         schedule();
@@ -668,11 +683,15 @@ static int (*threadfn)(void *data) = maio_post_tx_task;
 
 static inline int create_threads(void)
 {
-	maio_tx_thread = kthread_create(threadfn, NULL, "maio_tx_thread");
-	if (!IS_ERR(maio_tx_thread))
+	if (maio_tx_thread)
 		return 0;
 
-	return 1;
+	maio_tx_thread = kthread_create(threadfn, NULL, "maio_tx_thread");
+	if (IS_ERR(maio_tx_thread))
+		return -ENOMEM;
+
+	pr_err("maio_tx_thread created\n");
+	return 0;
 }
 
 static inline ssize_t maio_enable(struct file *file, const char __user *buf,

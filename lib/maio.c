@@ -67,7 +67,7 @@ static unsigned long head_cache_size;
 static u64 min_pages_0 = ULLONG_MAX;
 static u64 max_pages_0;
 
-static struct net_device *maio_devs[32];
+static struct net_device *maio_devs[32] __read_mostly;
 static	unsigned default_dev_idx = -1;
 
 DEFINE_PER_CPU(struct percpu_maio_qp, maio_qp);
@@ -531,7 +531,7 @@ unlock:
 #define tx_ring_entry(qp) 	(qp)->tx_ring[(qp)->tx_counter & ((qp)->tx_sz -1)]
 #define advance_tx_ring(qp)	(qp)->tx_ring[(qp)->tx_counter++ & ((qp)->tx_sz -1)] = 0
 
-#define TX_BATCH_SIZE	64
+#define TX_BATCH_SIZE	128
 int maio_post_tx_page(void *unused)
 {
 	struct io_md *md;
@@ -603,7 +603,7 @@ int maio_post_tx_page(void *unused)
 		//get_page(virt_to_page(kaddr));
 		skb_batch[cnt++] = skb;
 
-		if (cnt >= TX_BATCH_SIZE)
+		if (unlikely(cnt >= TX_BATCH_SIZE))
 			break;
 	}
 	trace_debug("%d: Sending %d buffers. counter %d\n", smp_processor_id(), cnt, tx_counter);

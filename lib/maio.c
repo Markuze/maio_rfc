@@ -757,7 +757,8 @@ int maio_post_tx_page(void *idx)
 
 static inline ssize_t maio_tx(struct file *file, const char __user *buf,
                                     size_t size, loff_t *_pos)
-{	char	kbuff[MAIO_TX_KBUFF_SZ], *cur;
+{
+	char	kbuff[MAIO_TX_KBUFF_SZ], *cur;
 	size_t 	idx;
 	//static size_t prev = -1;
 

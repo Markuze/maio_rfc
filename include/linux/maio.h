@@ -15,8 +15,10 @@
 #define MAX_DEV_NUM 	16
 
 #if 0
+//TODO: Take these at init and change to __read_mostly var
+#define UMAIO_STRIDE		0x1000
+#define UMAIO_STRIDE_MASK	(0x1000-1)
 #define UMAIO_HEADROOM	256 	//TODO: Figure out why 256 results in 4K stride in mlx5e
-#define UMAIO_STRIDE	0x1000
 #define UMAIO_RING_SZ	512
 #define UMAIO_RING_MASK	(UMAIO_RING_SZ -1)
 #endif

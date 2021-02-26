@@ -52,8 +52,8 @@ static struct maio_dev_map dev_map;
 /*TODO: Remove*/
 static u64 maio_rx_post_cnt;
 
-static u16 maio_headroom = 192;
-static u16 maio_stride = 0x800;//2K
+static u16 maio_headroom = (1024 -128);
+static u16 maio_stride = 0x1000;//4K
 
 /* HP Cache */
 static LIST_HEAD(hp_cache);
@@ -375,12 +375,13 @@ static inline bool ring_full(u64 p, u64 c)
 static inline char* alloc_copy_buff(struct percpu_maio_qp *qp)
 {
 	char *data;
-
+#if 0
 	if (qp->cached_mbuf) {
 		data = qp->cached_mbuf;
 		qp->cached_mbuf = NULL;
 		/*TODO: ASSERT on Refcount values...*/
 	} else {
+#endif
 		void *buffer = mag_alloc_elem(&global_maio.mag[order2idx(0)]);
 		struct page *page;
 
@@ -400,8 +401,10 @@ static inline char* alloc_copy_buff(struct percpu_maio_qp *qp)
 		/* get_page as this page will houses two mbufs */
 		get_page(page);
 		data = buffer + maio_get_page_headroom(NULL);
+#if 0
 		qp->cached_mbuf = data + maio_get_page_stride(NULL);
 	}
+#endif
 	return data;
 }
 
@@ -443,6 +446,23 @@ static inline int setup_dev_idx(unsigned dev_idx)
 	}
 
 	maio_devs[dev_idx] = dev;
+	return 0;
+}
+
+static inline bool test_maio_filter(void *addr)
+{
+       struct ethhdr   *eth    = addr;
+       struct iphdr    *iphdr  = (struct iphdr *)&eth[1];
+
+       /* network byte order of loader machine */
+       int trgt = (10|5<<8|3<<16|4<<24);
+
+
+       if (trgt == iphdr->saddr) {
+               trace_debug("SIP: %pI4 N[%x] DIP: %pI4 N[%x]\n", &iphdr->saddr, iphdr->saddr, &iphdr->daddr, iphdr->daddr);
+               return 0;
+       }
+       return 1;
 }
 
 /* Capture all but ssh traffic */
@@ -453,15 +473,15 @@ static inline bool default_maio_filter(void *addr)
 	struct tcphdr	*tcphdr = (struct tcphdr *)&iphdr[1];
 
 	if (ntohs(tcphdr->dest) == 22) {
-		return 0;
+		return 1;
 	}
 
-	return 1;
+	return 0;
 }
 
 void reset_maio_default_filter(void)
 {
-	maio_filter = default_maio_filter;
+	maio_filter = test_maio_filter;
 }
 EXPORT_SYMBOL(reset_maio_default_filter);
 
@@ -478,7 +498,6 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 	struct io_md *md;
 	struct percpu_maio_dev_qp *dev_qp = this_cpu_ptr(&maio_dev_qp);
 	struct percpu_maio_qp *qp;
-	int rc;
 
 	if (unlikely(!maio_configured))
 		return 0;
@@ -496,7 +515,7 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 		return 0;
 	}
 
-	if (!(rc = filter_packet(addr))) {
+	if (filter_packet(addr)) {
 		//trace_printk("skiping...\n");
 		return 0;
 	}
@@ -504,10 +523,10 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 	trace_debug("using page %llx addr %llx, len %d [%d]\n", (u64)page, (u64)addr, len, copy);
 	if (copy) {
 		void *buff = mag_alloc_elem(&global_maio.mag[order2idx(0)]);
-
 		if (!buff)
 			return 0;
 
+		buff = (void *)((u64)buff + maio_get_page_headroom(NULL));
 		page = virt_to_page(buff);
 
 		memcpy(buff, addr, len);
@@ -529,12 +548,11 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 	qp->rx_ring[qp->rx_counter & (qp->rx_sz -1)] = addr2uaddr(addr);
 	++qp->rx_counter;
 
-	trace_debug("%d:Posting[%lu] %s:%llx[%u]%llx{%d} %s\n", smp_processor_id(),
+	trace_debug("%d:Posting[%lu] %s:%llx[%u]%llx{%d}\n", smp_processor_id(),
 			qp->rx_counter & (qp->rx_sz -1),
 			copy ? "COPY" : "ZC",
 			(u64)addr, len,
-			addr2uaddr(addr), page_ref_count(page),
-			(rc) ? "MAIO RX":"PT" );
+			addr2uaddr(addr), page_ref_count(page));
 
 	return 1; //TODO: When buffer taken. put page of orig.
 }
@@ -610,7 +628,7 @@ int maio_post_tx_page(void *unused)
 
 	/* NOTICE: This works only for a single TX - no concurency!!! AND a single TX Ring */
 	(qp)->tx_counter = tx_counter[dev_idx];
-	trace_debug("[%d]Starting <%d>\n",smp_processor_id(), tx_counter & ((qp)->tx_sz -1));
+	//trace_debug("[%d]Starting <%d>\n",smp_processor_id(), tx_counter & ((qp)->tx_sz -1));
 
 	while ((uaddr = tx_ring_entry(qp))) {
 		struct sk_buff *skb;
@@ -651,7 +669,7 @@ int maio_post_tx_page(void *unused)
 //TODO: Consider adding ERR flags to ring entry.
 
 		len 	= md->len + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-		size 	= 0x800 - ((u64)kaddr & (0x800 -1));
+		size 	= maio_stride - ((u64)kaddr & (maio_stride -1));
 /*
 		trace_debug("Sending kaddr %llx [%d]from user %llx: len %d[size %d] poison %0x\n",
 				(u64)kaddr, page_ref_count(virt_to_page(kaddr)),
@@ -673,7 +691,7 @@ int maio_post_tx_page(void *unused)
 		if (unlikely(cnt >= TX_BATCH_SIZE))
 			break;
 	}
-	trace_debug("%d: Sending %d buffers. counter %d\n", smp_processor_id(), cnt, tx_counter);
+	trace_debug("%d: Sending %d buffers. counter %d\n", smp_processor_id(), cnt, tx_counter[dev_idx]);
 	if (cnt)
 		copy = maio_xmit(maio_devs[netdev_idx], skb_batch, cnt);
 
@@ -1113,7 +1131,12 @@ static const struct file_operations maio_tx_ops = {
 
 static inline void init_global_maio_state(void)
 {
-	memset(&dev_map, -1, sizeof(struct maio_dev_map));
+	int i = 0;
+	//memset(&dev_map, -1, sizeof(struct maio_dev_map));
+	for (i = 0; i < MAX_DEV_NUM; i++) {
+		dev_map.on_tx[i] = -1;
+		dev_map.on_rx[i] = -1;
+	}
 }
 
 static inline void proc_init(void)

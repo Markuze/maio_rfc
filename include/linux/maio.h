@@ -23,6 +23,15 @@
 #define UMAIO_RING_MASK	(UMAIO_RING_SZ -1)
 #endif
 
+/******** MAIO PAGE PRIVATE FLAGS ****************/
+#define MAIO_PAGE_MBUF	0xF00
+#define MAIO_PAGE_FREE	0x800	// storred in the magz
+#define MAIO_PAGE_IO	0x600	// TX|RX
+#define MAIO_PAGE_TX	0x400	// sent by user
+#define MAIO_PAGE_RX	0x200	// alloced from magz - usualy RX
+#define MAIO_PAGE_USER	0x100	// page in user space control
+/*************************************************/
+
 #define show_line pr_err("%s:%d\n",__FUNCTION__, __LINE__)
 
 typedef bool (*maio_filter_func_p)(void *);

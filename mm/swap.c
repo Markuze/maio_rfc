@@ -93,7 +93,7 @@ static void __put_compound_page(struct page *page)
 	 * (it's never listed to any LRU lists) and no memcg routines should
 	 * be called for hugetlb (it has a separate hugetlb_cgroup.)
 	 */
-	if (unlikely(is_maio_page(page))) {
+	if (unlikely(is_maio_io_page(page))) {
 		maio_page_free(page);
 		return;
 	}

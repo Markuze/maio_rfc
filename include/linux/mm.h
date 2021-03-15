@@ -857,13 +857,29 @@ static inline bool is_maio_page(struct page *page)
 
 	return (get_maio_uaddr(page)) ? 1 : 0;
 }
+static inline bool is_maio_io_page(struct page *page)
+{
+	return is_maio_page(page);
+	//return is_maio_page(page) && (page->private & MAIO_PAGE_IO);
+	if ( ! is_maio_page(page))
+		return false;
+
+	if (page->private & MAIO_PAGE_IO)
+		return true;
+
+	if (page->private & MAIO_PAGE_MBUF)
+		trace_printk("PANIC HERE?: %llx [%llx] %lx\n", (u64)page_to_virt(page), (u64)page, page->private);
+	else
+		trace_printk("WARNING NON MBUF: %llx [%llx] %lx\n", (u64)page_to_virt(page), (u64)page, page->private);
+	return false;
+}
 
 static inline struct page *virt_to_head_maio_page(const void *x)
 {
 	struct page *page = virt_to_page(x);
 
 	/* TODO: Fix this API for multipage MAIO alloc */
-	if (is_maio_page(page))
+	if (is_maio_io_page(page))
 		return page;
 	return compound_head(page);
 }
@@ -1084,7 +1100,7 @@ static inline bool is_pci_p2pdma_page(const struct page *page)
 
 static inline void get_page(struct page *page)
 {
-	if (unlikely(is_maio_page(page))) {
+	if (unlikely(is_maio_io_page(page))) {
 		maio_get_page(page);
 		return;
 	}
@@ -1100,7 +1116,7 @@ static inline void get_page(struct page *page)
 
 static inline __must_check bool try_get_page(struct page *page)
 {
-	if (unlikely(is_maio_page(page))) {
+	if (unlikely(is_maio_io_page(page))) {
 		maio_get_page(page);
 	} else {
 		page = compound_head(page);
@@ -1113,7 +1129,7 @@ static inline __must_check bool try_get_page(struct page *page)
 
 static inline void put_page(struct page *page)
 {
-	if (is_maio_page(page)) {
+	if (is_maio_io_page(page)) {
 		maio_put_page(page);
 		return;
 	}

@@ -52,7 +52,7 @@ static struct maio_dev_map dev_map;
 /*TODO: Remove*/
 static u64 maio_rx_post_cnt;
 
-static u16 maio_headroom = (1024 -128);
+static u16 maio_headroom = (0x800 -128);
 static u16 maio_stride = 0x1000;//4K
 
 /* HP Cache */
@@ -68,8 +68,10 @@ static LIST_HEAD(head_cache);
 DEFINE_SPINLOCK(head_cache_lock);
 static unsigned long head_cache_size;
 
+/*
 static u64 min_pages_0 = ULLONG_MAX;
 static u64 max_pages_0;
+*/
 
 static struct net_device *maio_devs[MAX_DEV_NUM] __read_mostly;
 
@@ -253,11 +255,12 @@ void maio_page_free(struct page *page)
 {
 	/* Need to make sure we dont get only head pages here...*/
 	//trace_printk("%d:%s: %llx %pS\n", smp_processor_id(), __FUNCTION__, (u64)page, __builtin_return_address(0));
-	assert(is_maio_page(page));
-	assert(min_pages_0 <= (u64)page);
-	assert(max_pages_0 >= (u64)page);
+	assert(is_maio_io_page(page));
 	assert(page_ref_count(page) == 0);
+
+	page->private = MAIO_PAGE_FREE;
 	put_buffers(page_address(page), get_maio_elem_order(page));
+
 	return;
 }
 EXPORT_SYMBOL(maio_page_free);
@@ -271,10 +274,10 @@ void maio_frag_free(void *addr)
 	*/
 	struct page* page = virt_to_page(addr); /* TODO: Align on elem order*/
 	//trace_printk("%d:%s: %llx %pS\n", smp_processor_id(), __FUNCTION__, (u64)page, __builtin_return_address(0));
-	assert(is_maio_page(page));
-	assert(min_pages_0 <= (u64)page);
-	assert(max_pages_0 >= (u64)page);
+	assert(is_maio_io_page(page));
 	assert(page_ref_count(page) == 0);
+
+	page->private = MAIO_PAGE_FREE;
 	put_buffers(page_address(page), get_maio_elem_order(page));
 
 	return;
@@ -337,7 +340,11 @@ struct page *maio_alloc_pages(size_t order)
 			panic("P %llx: %llx  has %d refcnt\n", (u64)page, (u64)page_address(page), page_ref_count(page));
 		}
 		assert(is_maio_page(page));
+		assert(page->private == MAIO_PAGE_FREE);
+		page->private = MAIO_PAGE_RX;
+
 		init_page_count(page);
+		assert(is_maio_io_page(page));
 	}
 	//trace_printk("%d:%s: %pS\n", smp_processor_id(), __FUNCTION__, __builtin_return_address(0));
 	//trace_printk("%d:%s:%llx\n", smp_processor_id(), __FUNCTION__, (u64)page);
@@ -395,7 +402,11 @@ static inline char* alloc_copy_buff(struct percpu_maio_qp *qp)
 					__FUNCTION__, (u64)page, page_ref_count(page), (u64)page_address(page));
 			panic("P %llx: %llx  has %d refcnt\n", (u64)page, (u64)page_address(page), page_ref_count(page));
 		}
+
 		assert(is_maio_page(page));
+		assert(page->private == MAIO_PAGE_FREE);
+		page->private = MAIO_PAGE_USER;
+
 		init_page_count(page);
 
 		/* get_page as this page will houses two mbufs */
@@ -506,6 +517,13 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 		return 0;
 	}
 
+	if (!copy) {
+		assert(is_maio_page(page));
+		assert(is_maio_io_page(page));
+		assert(page->private == MAIO_PAGE_RX);
+		page->private = MAIO_PAGE_USER;
+	}
+
 	qp = &dev_qp->qp[qp_idx];
 
 	if (qp->rx_ring[qp->rx_counter & (qp->rx_sz -1)]) {
@@ -529,6 +547,7 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 		buff = (void *)((u64)buff + maio_get_page_headroom(NULL));
 		page = virt_to_page(buff);
 
+		page->private = MAIO_PAGE_USER;
 		memcpy(buff, addr, len);
 		addr = buff;
 		trace_debug("copy to using page %llx addr %llx\n", (u64)page, (u64)addr);
@@ -633,7 +652,8 @@ int maio_post_tx_page(void *unused)
 	while ((uaddr = tx_ring_entry(qp))) {
 		struct sk_buff *skb;
 		unsigned len, size;
-		void *kaddr = uaddr2addr(uaddr);
+		void 		*kaddr	= uaddr2addr(uaddr);
+		struct page 	*page	= virt_to_page(kaddr);
 
 		advance_tx_ring(qp);
 
@@ -643,7 +663,7 @@ int maio_post_tx_page(void *unused)
 			continue;
 		}
 
-		if (unlikely(!is_maio_page(virt_to_page(kaddr)))) {
+		if (unlikely(!is_maio_page(page))) {
 #if 0
 	#TODO: Add the copy option.
 			char *buff = alloc_copy_buff(qp);
@@ -658,12 +678,17 @@ int maio_post_tx_page(void *unused)
 			pr_err("NON MAIO page sent [%llx]\n", uaddr);
 			continue;
 		}
+
+		page->private = MAIO_PAGE_TX;
+		assert(page->private & MAIO_PAGE_IO);
+		assert(is_maio_io_page(page));
+
 		md = kaddr;
 		md--;
 
 		if (unlikely(md->poison != MAIO_POISON)) {
 			pr_err("NO MAIO-POISON Found [%llx] -- Please make sure to put the buffer\n", uaddr);
-			put_page(virt_to_page(kaddr));
+			put_page(page);
 			continue;
 		}
 //TODO: Consider adding ERR flags to ring entry.
@@ -676,7 +701,7 @@ int maio_post_tx_page(void *unused)
 				(u64)uaddr, md->len, size, md->poison);
 */
 		trace_debug("Sending %llx [%d]from user %llx [%d]\n",
-				(u64)kaddr, page_ref_count(virt_to_page(kaddr)),
+				(u64)kaddr, page_ref_count(page),
 				(u64)uaddr, cnt);
 		if (unlikely(((uaddr & (PAGE_SIZE -1)) + len) > PAGE_SIZE)) {
 			pr_err("Buffer to Long [%llx] len %u klen = %u\n", uaddr, md->len, len);
@@ -685,7 +710,7 @@ int maio_post_tx_page(void *unused)
 		skb = build_skb(kaddr, size);//TODO:
 		skb_put(skb, md->len);
 		skb->dev = maio_devs[netdev_idx];
-		//get_page(virt_to_page(kaddr));
+		//get_page(page);
 		skb_batch[cnt++] = skb;
 
 		if (unlikely(cnt >= TX_BATCH_SIZE))
@@ -922,12 +947,6 @@ static inline ssize_t maio_add_pages_0(struct file *file, const char __user *buf
 		page = virt_to_page(kbase);
 		kbase = (void *)((u64)kbase  & PAGE_MASK);
 
-		if (min_pages_0  > (u64)page)
-			min_pages_0 = (u64)page;
-
-		if (max_pages_0  < (u64)page)
-			max_pages_0 = (u64)page;
-
 		if (PageHead(page)) {
 			//trace_printk("[%ld]Caching %llx [%llx]  - P %llx[%d]\n", len, (u64 )kbase, meta->bufs[len],
 			//	(u64)page, page_ref_count(page));
@@ -936,8 +955,10 @@ static inline ssize_t maio_add_pages_0(struct file *file, const char __user *buf
 			//trace_printk("[%ld]Adding %llx [%llx]  - P %llx[%d]\n", len, (u64 )kbase, meta->bufs[len],
 			//		(u64)page, page_ref_count(page));
 			set_page_count(page, 0);
+			page->private = MAIO_PAGE_FREE;
 
 			assert(get_maio_elem_order(__compound_head(page, 0)) == 0);
+			assert(is_maio_page(page));
 			maio_free_elem(kbase, 0);
 		}
 	}
@@ -1071,7 +1092,7 @@ static int maio_map_show(struct seq_file *m, void *v)
         return 0;
 }
 
-#define MAIO_VERSION	"v0.2"
+#define MAIO_VERSION	"v0.2-noio"
 static int maio_version_show(struct seq_file *m, void *v)
 {
 	seq_printf(m, "%s\n", MAIO_VERSION);

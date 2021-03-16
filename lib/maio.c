@@ -1175,7 +1175,7 @@ static __init int maio_init(void)
 {
 	int i = 0;
 
-	maio_filter = default_maio_filter;
+	maio_filter = test_maio_filter;
 	maio_configured = false;
 	for (;i< NUM_MAIO_SIZES; i++)
 		mag_allocator_init(&global_maio.mag[i]);

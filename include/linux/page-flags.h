@@ -96,7 +96,6 @@
  * SPARSEMEM section (for variants of SPARSEMEM that require section ids like
  * SPARSEMEM_EXTREME with !SPARSEMEM_VMEMMAP).
  */
-/* DO I have room here ?*/
 enum pageflags {
 	PG_locked,		/* Page is locked. Don't touch. */
 	PG_referenced,

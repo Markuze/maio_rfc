@@ -845,6 +845,7 @@ int netvsc_recv_callback(struct net_device *net,
 		return NVSP_STAT_FAIL;
 
 	if (netvsc_run_maio(net, nvchan)) {
+		trace_printk("buffer stopen by MAIO\n");
                 return NVSP_STAT_SUCCESS; /* page/packet was consumed by MAIO */
 	}
 

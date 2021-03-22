@@ -678,7 +678,6 @@ void free_compound_page(struct page *page)
 	__free_pages_ok(page, compound_order(page));
 }
 
-/* Wheres my bit ?*/
 void prep_compound_page(struct page *page, unsigned int order)
 {
 	int i;
@@ -4828,7 +4827,7 @@ static inline void free_the_page(struct page *page, unsigned int order)
 	if (order == 0)		/* Via pcp? */
 		free_unref_page(page);
 	else
-		if (unlikely(is_maio_io_page(page)))
+		if (unlikely(is_maio_page(page)))
 			maio_page_free(page);
 		else
 			__free_pages_ok(page, order);
@@ -4953,7 +4952,7 @@ void page_frag_free(void *addr)
 {
 	struct page *page = virt_to_head_page(addr);
 
-	if (is_maio_io_page(page)) {
+	if (is_maio_page(page)) {
 		page = virt_to_page(addr);
 		if (unlikely(put_page_testzero(page)))
 			maio_frag_free(addr);

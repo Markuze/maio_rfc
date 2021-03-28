@@ -40,6 +40,7 @@ EXPORT_SYMBOL(maio_filter);
 
 /* get_user_pages */
 static struct page* umem_pages[1<<HUGE_ORDER];
+static struct page* mtrx_pages[1<<HUGE_ORDER];
 
 static struct proc_dir_entry *maio_dir;
 static struct maio_magz global_maio;
@@ -48,7 +49,6 @@ static struct maio_magz global_maio;
 struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
 EXPORT_SYMBOL(global_maio_matrix);
 
-static struct maio_dev_map dev_map;
 /*TODO: Remove*/
 static u64 maio_rx_post_cnt;
 
@@ -69,6 +69,7 @@ DEFINE_SPINLOCK(head_cache_lock);
 static unsigned long head_cache_size;
 
 static struct net_device *maio_devs[MAX_DEV_NUM] __read_mostly;
+static struct maio_dev_map dev_map;
 
 DEFINE_PER_CPU(struct percpu_maio_dev_qp, maio_dev_qp);
 /* TODO:
@@ -94,6 +95,21 @@ static inline u64 get_page_state(struct page *page)
 	u64 *states	= page_address((__compound_head(page, 0)));
 	int idx 	= (((u64)page_address(page)) & HUGE_OFFSET) >> PAGE_SHIFT;//0-512
 	return states[idx];
+}
+
+static inline void flush_all_mtts(void)
+{
+	struct rb_node *node = mtt_tree.rb_node;
+
+	while (node) {
+		struct umem_region_mtt *mtt = container_of(node, struct umem_region_mtt, node);
+
+		/* Current implememntation 5.4 is enough to put only the head page */
+		put_user_pages(mtt->pages, mtt->len);
+		rb_erase(node, &mtt_tree);
+		kfree(mtt);
+		node = mtt_tree.rb_node;
+	}
 }
 
 static inline struct umem_region_mtt *find_mtt(u64 addr)
@@ -323,7 +339,13 @@ EXPORT_SYMBOL(maio_get_page_stride);
 struct page *maio_alloc_pages(size_t order)
 {
 	struct page *page;
-	void *buffer = mag_alloc_elem(&global_maio.mag[order2idx(order)]);
+	void *buffer;
+
+
+	if (unlikely( ! maio_configured))
+		return NULL;
+
+	buffer = mag_alloc_elem(&global_maio.mag[order2idx(order)]);
 
 	/* should happen on init when mag is empty.*/
 	if (unlikely(!buffer)) {
@@ -622,9 +644,9 @@ unlock:
 static unsigned tx_counter[MAX_DEV_NUM];
 
 #define TX_BATCH_SIZE	32
-int maio_post_tx_page(void *unused)
+int maio_post_tx_page(void *idx)
 {
-	u64 dev_idx = (u64)unused;
+	u64 dev_idx = (u64)idx;
 	u64 netdev_idx = get_tx_netdev_idx(dev_idx);
 	struct io_md *md;
 	struct sk_buff *skb_batch[TX_BATCH_SIZE];
@@ -720,7 +742,7 @@ static inline ssize_t maio_tx(struct file *file, const char __user *buf,
                                     size_t size, loff_t *_pos)
 {	char	kbuff[MAIO_TX_KBUFF_SZ], *cur;
 	size_t 	idx;
-	static size_t prev = -1;
+	//static size_t prev = -1;
 
 	if (unlikely(!maio_configured))
 		return -ENODEV;
@@ -776,7 +798,9 @@ static int maio_post_tx_task(void *unused)
         return 0;
 }
 
+#if 0
 static int (*threadfn)(void *data) = maio_post_tx_task;
+#endif
 
 static inline int create_threads(void)
 {
@@ -865,17 +889,20 @@ static inline ssize_t init_user_rings(struct file *file, const char __user *buf,
 
 	kbase = uaddr2addr(base);
 	if (!kbase) {
-
-		pr_err("Uaddr %llx is not found in MTT [0x%llx - 0x%llx)\n", base, cached_mtt->start, cached_mtt->end);
-		if ((rc = get_user_pages(base, (len >> PAGE_SHIFT), FOLL_LONGTERM, &umem_pages[0], NULL)) < 0) {
+		/*TODO: Is this a thing ? */
+		pr_err("Uaddr %llx is not found in MTT [0x%llx - 0x%llx) len %ld\n", base, cached_mtt->start, cached_mtt->end, len);
+		if ((rc = get_user_pages(base, ((PAGE_SIZE -1 + len) >> PAGE_SHIFT), FOLL_LONGTERM, &mtrx_pages[0], NULL)) < 0) {
 			pr_err("ERROR on get_user_pages %ld\n", rc);
 			return rc;
 		}
-		kbase = page_address(umem_pages[0]) + (base & (PAGE_SIZE -1));
+		kbase = page_address(mtrx_pages[0]) + (base & (PAGE_SIZE -1));
+		//put_user_pages - follow MTT.
 	}
-	pr_err("MTRX is set to %llx[%llx] user %llx order [%d] rc = %ld\n", (u64)kbase, (u64)page_address(umem_pages[0]),
+	pr_err("MTRX is set to %llx[%llx] user %llx order [%d] rc = %ld\n", (u64)kbase, (u64)page_address(mtrx_pages[0]),
 			base, compound_order(virt_to_head_page(kbase)), rc);
+
 	global_maio_matrix[dev_idx] = (struct user_matrix *)kbase;
+
 	pr_err("Set user matrix to %llx [%ld]: RX %d [%d] TX %d [%d]\n", (u64)global_maio_matrix[dev_idx], len,
 				global_maio_matrix[dev_idx]->info.nr_rx_rings,
 				global_maio_matrix[dev_idx]->info.nr_rx_sz,
@@ -954,6 +981,54 @@ static inline ssize_t maio_add_pages_0(struct file *file, const char __user *buf
 	return 0;
 }
 
+static inline void reset_global_maio_state(void)
+{
+	int i = 0;
+	//memset(&dev_map, -1, sizeof(struct maio_dev_map));
+	for (i = 0; i < MAX_DEV_NUM; i++) {
+		dev_map.on_tx[i] = -1;
+		dev_map.on_rx[i] = -1;
+	}
+}
+
+static inline void maio_stop(void)
+{
+	//maio_disable
+	int i = 0, cpu = 0;
+
+	maio_configured = 0;
+
+	//ndo_dev_stop for each
+	for (i = 0; i < MAX_DEV_NUM; i++) {
+		struct net_device *dev;
+		const struct net_device_ops *ops;
+
+		dev = maio_devs[i];
+		if (! maio_devs[i])
+			continue;
+
+		ops = dev->netdev_ops;
+		if (ops->ndo_dev_reset)
+			ops->ndo_dev_reset(dev);
+	}
+
+	//magazine empty
+	//drain the global full magz, the unsafe alloc_on_cpu only drains core local magz
+	while (mag_alloc_elem(&global_maio.mag[order2idx(0)]));
+
+	//drain the local per core magz
+	for_each_possible_cpu(cpu) {
+		 while (mag_alloc_elem_on_cpu(&global_maio.mag[order2idx(0)], cpu));
+	}
+
+	//mtt destroy and put_user_pages
+	//while root.node; 1.put_pages 2.rb_erase
+	flush_all_mtts();
+	//reset globals
+	//TODO: Validate -- go over all globals
+	reset_global_maio_state();
+}
+
 static inline ssize_t maio_map_page(struct file *file, const char __user *buf,
                                     size_t size, loff_t *_pos, bool cache)
 {
@@ -989,7 +1064,9 @@ static inline ssize_t maio_map_page(struct file *file, const char __user *buf,
 
 	for (i = 0; i < len; i++) {
 		u64 uaddr = base + (i * HUGE_SIZE);
-		rc = get_user_pages(uaddr, (1 << HUGE_ORDER), FOLL_LONGTERM, &umem_pages[0], NULL);
+		//rc = get_user_pages(uaddr, (1 << HUGE_ORDER), FOLL_LONGTERM, &umem_pages[0], NULL);
+		//its enough to get the compound head
+		rc = get_user_pages(uaddr, 1 , FOLL_LONGTERM, &umem_pages[0], NULL);
 		//trace_printk("[%ld]%llx[%llx:%d] \n", rc, uaddr, (unsigned long long)umem_pages[0],
 		//					compound_order(__compound_head(umem_pages[0], 0)));
 
@@ -1043,6 +1120,13 @@ static ssize_t maio_pages_write(struct file *file,
         return maio_map_page(file, buffer, count, pos, true);
 }
 
+static ssize_t maio_stop_write(struct file *file,
+                const char __user *buffer, size_t count, loff_t *pos)
+{
+	maio_stop();
+	return count;
+}
+
 static ssize_t maio_map_write(struct file *file,
                 const char __user *buffer, size_t count, loff_t *pos)
 {
@@ -1082,7 +1166,7 @@ static int maio_map_show(struct seq_file *m, void *v)
         return 0;
 }
 
-#define MAIO_VERSION	"v0.2-new-io"
+#define MAIO_VERSION	"v0.2-teardown-io"
 static int maio_version_show(struct seq_file *m, void *v)
 {
 	seq_printf(m, "%s\n", MAIO_VERSION);
@@ -1114,7 +1198,7 @@ static const struct file_operations maio_version_fops = {
 static const struct file_operations maio_mtrx_ops = {
         .open      = maio_map_open,
         .read      = seq_read,
-        .llseek     = seq_lseek,
+        .llseek    = seq_lseek,
         .release   = single_release,
         .write     = maio_mtrx_write,
 };
@@ -1122,7 +1206,7 @@ static const struct file_operations maio_mtrx_ops = {
 static const struct file_operations maio_page_0_ops = {
         .open      = maio_map_open, /* TODO: Change to func that pirnts the mapped user pages */
         .read      = seq_read,
-        .llseek     = seq_lseek,
+        .llseek    = seq_lseek,
         .release   = single_release,
         .write     = maio_pages_0_write,
 };
@@ -1130,15 +1214,23 @@ static const struct file_operations maio_page_0_ops = {
 static const struct file_operations maio_page_ops = {
         .open      = maio_map_open, /* TODO: Change to func that pirnts the mapped user pages */
         .read      = seq_read,
-        .llseek     = seq_lseek,
+        .llseek    = seq_lseek,
         .release   = single_release,
         .write     = maio_pages_write,
+};
+
+static const struct file_operations maio_stop_ops = {
+        .open      = maio_enable_open, /* TODO: Change to func that pirnts the mapped user pages */
+        .read      = seq_read,
+        .llseek    = seq_lseek,
+        .release   = single_release,
+        .write     = maio_stop_write,
 };
 
 static const struct file_operations maio_map_ops = {
         .open      = maio_map_open, /* TODO: Change to func that pirnts the mapped user pages */
         .read      = seq_read,
-        .llseek     = seq_lseek,
+        .llseek    = seq_lseek,
         .release   = single_release,
         .write     = maio_map_write,
 };
@@ -1146,7 +1238,7 @@ static const struct file_operations maio_map_ops = {
 static const struct file_operations maio_enable_ops = {
         .open      = maio_enable_open,
         .read      = seq_read,
-        .llseek     = seq_lseek,
+        .llseek    = seq_lseek,
         .release   = single_release,
         .write     = maio_enable_write,
 };
@@ -1154,26 +1246,17 @@ static const struct file_operations maio_enable_ops = {
 static const struct file_operations maio_tx_ops = {
         .open      = maio_map_open,
         .read      = seq_read,
-        .llseek     = seq_lseek,
+        .llseek    = seq_lseek,
         .release   = single_release,
         .write     = maio_tx_write,
 };
 
-static inline void init_global_maio_state(void)
-{
-	int i = 0;
-	//memset(&dev_map, -1, sizeof(struct maio_dev_map));
-	for (i = 0; i < MAX_DEV_NUM; i++) {
-		dev_map.on_tx[i] = -1;
-		dev_map.on_rx[i] = -1;
-	}
-}
-
 static inline void proc_init(void)
 {
-	init_global_maio_state();
+	reset_global_maio_state();
 	maio_dir = proc_mkdir_mode("maio", 00555, NULL);
 	proc_create_data("map", 00666, maio_dir, &maio_map_ops, NULL);
+	proc_create_data("stop", 00666, maio_dir, &maio_stop_ops, NULL);
 	proc_create_data("mtrx", 00666, maio_dir, &maio_mtrx_ops, NULL);
 	proc_create_data("pages", 00666, maio_dir, &maio_page_ops, NULL);
 	proc_create_data("pages_0", 00666, maio_dir, &maio_page_0_ops, NULL);

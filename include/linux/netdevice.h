@@ -1440,6 +1440,8 @@ struct net_device_ops {
 	int			(*ndo_xsk_wakeup)(struct net_device *dev,
 						  u32 queue_id, u32 flags);
 	struct devlink_port *	(*ndo_get_devlink_port)(struct net_device *dev);
+	void 			(*ndo_dev_reset)(struct net_device *dev);
+
 };
 
 /**

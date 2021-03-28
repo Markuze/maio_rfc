@@ -144,6 +144,20 @@ static void mag_allocator_switch_empty(struct mag_allocator *allocator, struct m
 	spin_unlock_irqrestore(&allocator->lock, flags);
 }
 
+void *mag_alloc_elem_on_cpu(struct mag_allocator *allocator, int cpu)
+{
+	struct percpu_mag_pair *pcp = per_cpu_ptr(allocator->pcp_pair, cpu);
+	struct mag_pair	*pair = &pcp->pair[0];
+	void 		*elem;
+
+	if (unlikely(mag_pair_count(pair) == 0 )) {
+		pair = &pcp->pair[1];
+	}
+
+	elem = mag_pair_alloc(pair);
+	return elem;
+}
+
 void *mag_alloc_elem(struct mag_allocator *allocator)
 {
 	unsigned long flags;

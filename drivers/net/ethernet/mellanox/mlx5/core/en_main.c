@@ -4345,6 +4345,23 @@ unlock:
 	rtnl_unlock();
 }
 
+static void mlx5e_reset(struct net_device *dev)
+{
+	struct mlx5e_priv *priv = netdev_priv(dev);
+	int err;
+
+	rtnl_lock();
+	mutex_lock(&priv->state_lock);
+
+	err = mlx5e_safe_reopen_channels(priv);
+	if (err)
+		netdev_err(priv->netdev,
+				"mlx5e_safe_reopen_channels failed recovering from a %s, err(%d).\n",
+				__FUNCTION__, err);
+	mutex_unlock(&priv->state_lock);
+	rtnl_unlock();
+}
+
 static void mlx5e_tx_timeout(struct net_device *dev)
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
@@ -4596,6 +4613,7 @@ const struct net_device_ops mlx5e_netdev_ops = {
 	.ndo_bpf		 = mlx5e_xdp,
 	.ndo_xdp_xmit            = mlx5e_xdp_xmit,
 	.ndo_xsk_wakeup          = mlx5e_xsk_wakeup,
+	.ndo_dev_reset		 = mlx5e_reset,
 #ifdef CONFIG_MLX5_EN_ARFS
 	.ndo_rx_flow_steer	 = mlx5e_rx_flow_steer,
 #endif

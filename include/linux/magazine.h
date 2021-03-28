@@ -41,6 +41,9 @@ struct mag_allocator {
 
 void *mag_alloc_elem(struct mag_allocator *allocator);
 
+/*unsafe version -- to be used ONLY in a teardown scenario*/
+void *mag_alloc_elem_on_cpu(struct mag_allocator *allocator, int cpu);
+
 void mag_free_elem(struct mag_allocator *allocator, void *elem);
 
 void mag_allocator_init(struct mag_allocator *allocator);

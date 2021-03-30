@@ -102,9 +102,17 @@ static inline void flush_all_mtts(void)
 	struct rb_node *node = mtt_tree.rb_node;
 
 	while (node) {
+		int i = 0;
 		struct umem_region_mtt *mtt = container_of(node, struct umem_region_mtt, node);
 
 		/* Current implememntation 5.4 is enough to put only the head page */
+		pr_err("%s:freeing MTT [0x%llx - 0x%llx) len %d\n", __FUNCTION__, mtt->start, mtt->end, mtt->len);
+		for (; i < mtt->len; i++) {
+			set_maio_uaddr(mtt->pages[i], 0);
+			trace_printk("%llx rc: %d\n", (unsigned long long)mtt->pages[i],
+							page_ref_count(mtt->pages[i]));
+		}
+
 		put_user_pages(mtt->pages, mtt->len);
 		rb_erase(node, &mtt_tree);
 		kfree(mtt);
@@ -446,6 +454,12 @@ static inline int get_rx_qp_idx(struct net_device *netdev)
 
 static inline int get_tx_netdev_idx(u64 dev_idx)
 {
+	static int prev;
+
+	if (unlikely(dev_map.on_tx[dev_idx] != prev)) {
+		prev = dev_map.on_tx[dev_idx];
+		pr_err("%s) %llx -> %d\n", __FUNCTION__, dev_idx, prev);
+	}
 	return dev_map.on_tx[dev_idx];
 }
 
@@ -464,8 +478,9 @@ static inline int setup_dev_idx(unsigned dev_idx)
 	dev_map.on_rx[dev_idx] = dev_idx;
 
 	netdev_for_each_lower_dev(dev, iter_dev, iter) {
-		trace_printk("[%s:%d]lower: device %s [%d]added\n", dev->name, dev->ifindex, iter_dev->name, iter_dev->ifindex);
-		if (dev_map.on_tx[dev_idx] != -1) {
+		trace_printk("[%s:%d]lower: device %s [%d]added\n", iter_dev->name, iter_dev->ifindex, iter_dev->name, iter_dev->ifindex);
+
+		if (dev_map.on_tx[dev_idx] != dev_idx) {
 			//In case of multiple slave devs; on TX use the master dev.
 			dev_map.on_tx[dev_idx] = dev_idx;
 		} else  {
@@ -474,6 +489,7 @@ static inline int setup_dev_idx(unsigned dev_idx)
 		}
 		//On RX choose the correct  QP
 		dev_map.on_rx[iter_dev->ifindex] = dev_idx;
+		maio_devs[iter_dev->ifindex] = iter_dev;
 	}
 
 	maio_devs[dev_idx] = dev;
@@ -525,7 +541,7 @@ static inline int filter_packet(void *addr)
 static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32 len, int copy)
 {
 	u64 qp_idx = get_rx_qp_idx(netdev);
-	struct page *page = virt_to_page(addr);
+	struct page *page;
 	struct io_md *md;
 	struct percpu_maio_dev_qp *dev_qp = this_cpu_ptr(&maio_dev_qp);
 	struct percpu_maio_qp *qp;
@@ -567,6 +583,7 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 		/* the orig copy is not used so ignore */
 	} else {
 		/* We are using it so get*/
+		page = virt_to_page(addr);
 		get_page(page);
 	}
 
@@ -890,7 +907,7 @@ static inline ssize_t init_user_rings(struct file *file, const char __user *buf,
 	kbase = uaddr2addr(base);
 	if (!kbase) {
 		/*TODO: Is this a thing ? */
-		pr_err("Uaddr %llx is not found in MTT [0x%llx - 0x%llx) len %ld\n", base, cached_mtt->start, cached_mtt->end, len);
+		pr_err("WARNING: Uaddr %llx is not found in MTT [0x%llx - 0x%llx) len %ld\n", base, cached_mtt->start, cached_mtt->end, len);
 		if ((rc = get_user_pages(base, ((PAGE_SIZE -1 + len) >> PAGE_SHIFT), FOLL_LONGTERM, &mtrx_pages[0], NULL)) < 0) {
 			pr_err("ERROR on get_user_pages %ld\n", rc);
 			return rc;
@@ -946,7 +963,7 @@ static inline ssize_t maio_add_pages_0(struct file *file, const char __user *buf
 	        return PTR_ERR(kbuff);
 
 	meta = kbuff;
-	pr_err("meta: [%u: 0x%x %u 0x%x]\n", meta->nr_pages, meta->stride, meta->headroom, meta->flags);
+	pr_err("%s:meta: [%u: 0x%x %u 0x%x]\n", __FUNCTION__, meta->nr_pages, meta->stride, meta->headroom, meta->flags);
 	assert(maio_headroom >= meta->headroom);
 
 	for (len = 0; len < meta->nr_pages; len++) {
@@ -966,7 +983,7 @@ static inline ssize_t maio_add_pages_0(struct file *file, const char __user *buf
 			//	(u64)page, page_ref_count(page));
 			//maio_cache_head(page);
 			set_maio_is_io(page);
-			memset(page_address(page), 0, PAGE_SIZE);
+			//memset(page_address(page), 0, PAGE_SIZE);
 		} else {
 			//trace_printk("[%ld]Adding %llx [%llx]  - P %llx[%d]\n", len, (u64 )kbase, meta->bufs[len],
 			//		(u64)page, page_ref_count(page));
@@ -989,6 +1006,8 @@ static inline void reset_global_maio_state(void)
 		dev_map.on_tx[i] = -1;
 		dev_map.on_rx[i] = -1;
 	}
+
+	memset(maio_devs, 0, sizeof(maio_devs));
 }
 
 static inline void maio_stop(void)
@@ -998,6 +1017,7 @@ static inline void maio_stop(void)
 
 	maio_configured = 0;
 
+	pr_err("%s\n", __FUNCTION__);
 	//ndo_dev_stop for each
 	for (i = 0; i < MAX_DEV_NUM; i++) {
 		struct net_device *dev;
@@ -1008,21 +1028,30 @@ static inline void maio_stop(void)
 			continue;
 
 		ops = dev->netdev_ops;
-		if (ops->ndo_dev_reset)
+
+		pr_err("Fluishing mem from [%d:%d] %s (%s)\n", i, dev->ifindex, dev->name, ops->ndo_dev_reset ? "Flush" : "NOP");
+		if (ops->ndo_dev_reset) {
 			ops->ndo_dev_reset(dev);
+		}
 	}
 
 	//magazine empty
 	//drain the global full magz, the unsafe alloc_on_cpu only drains core local magz
-	while (mag_alloc_elem(&global_maio.mag[order2idx(0)]));
+	i = 0;
+	while (mag_alloc_elem(&global_maio.mag[order2idx(0)])) {i++;}
 
+	pr_err("flushed %d local buffers\n", i);
 	//drain the local per core magz
+	i = 0;
 	for_each_possible_cpu(cpu) {
 		 while (mag_alloc_elem_on_cpu(&global_maio.mag[order2idx(0)], cpu));
 	}
+	pr_err("flushed %d remote buffers\n", i);
 
 	//mtt destroy and put_user_pages
 	//while root.node; 1.put_pages 2.rb_erase
+
+	pr_err("flushing MTTS");
 	flush_all_mtts();
 	//reset globals
 	//TODO: Validate -- go over all globals
@@ -1047,7 +1076,7 @@ static inline ssize_t maio_map_page(struct file *file, const char __user *buf,
 
 	base	= simple_strtoull(kbuff, &cur, 16);
 	len	= simple_strtol(cur + 1, &cur, 10);
-	pr_err("Got: [%llx: %ld]\n", base, len);
+	pr_err("%s:Got: [%llx: %ld]\n", __FUNCTION__, base, len);
 	kfree(kbuff);
 
 	if (!(mtt = kzalloc(sizeof(struct umem_region_mtt)
@@ -1067,8 +1096,9 @@ static inline ssize_t maio_map_page(struct file *file, const char __user *buf,
 		//rc = get_user_pages(uaddr, (1 << HUGE_ORDER), FOLL_LONGTERM, &umem_pages[0], NULL);
 		//its enough to get the compound head
 		rc = get_user_pages(uaddr, 1 , FOLL_LONGTERM, &umem_pages[0], NULL);
-		//trace_printk("[%ld]%llx[%llx:%d] \n", rc, uaddr, (unsigned long long)umem_pages[0],
-		//					compound_order(__compound_head(umem_pages[0], 0)));
+		trace_printk("[%ld]%llx[%llx:%d] rc: %d\n", rc, uaddr, (unsigned long long)umem_pages[0],
+							compound_order(__compound_head(umem_pages[0], 0)),
+							page_ref_count(umem_pages[0]));
 
 		assert(compound_order(__compound_head(umem_pages[0], 0)) == HUGE_ORDER);
 		/*

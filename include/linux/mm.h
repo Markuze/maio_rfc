@@ -834,8 +834,10 @@ static inline void set_maio_is_io(struct page *page)
 
 static inline void set_maio_uaddr(struct page *page, u64 uaddr)
 {
+#if 0
 	if (page[1].uaddr)
 		pr_err("Double call to set_maio_uaddr was %lx now %llx\n", page[1].uaddr, uaddr);
+#endif
 	page[1].uaddr = uaddr;
 }
 

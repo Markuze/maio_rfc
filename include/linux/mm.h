@@ -828,8 +828,10 @@ static inline void maio_get_page(struct page *page)
 
 static inline void set_maio_is_io(struct page *page)
 {
+/*
 	page = __compound_head(page, 0);
 	page[1].uaddr |= IS_MAIO_MASK;
+*/
 }
 
 static inline void set_maio_uaddr(struct page *page, u64 uaddr)
@@ -862,8 +864,11 @@ static inline bool is_maio_page(struct page *page)
 {
 	if (!PageCompound(page))
 		return 0;
-
-	return (get_maio_uaddr(page) & IS_MAIO_MASK) ? 1 : 0;
+	/* We exclude Head Pages from I/O */
+	if (unlikely(PageHead(page)))
+		return 0;
+	return get_maio_uaddr(page) ? 1 : 0;
+	//return (get_maio_uaddr(page) & IS_MAIO_MASK) ? 1 : 0;
 }
 
 static inline struct page *virt_to_head_maio_page(const void *x)

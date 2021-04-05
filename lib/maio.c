@@ -989,7 +989,7 @@ static inline ssize_t maio_add_pages_0(struct file *file, const char __user *buf
 			//trace_printk("[%ld]Adding %llx [%llx]  - P %llx[%d]\n", len, (u64 )kbase, meta->bufs[len],
 			//		(u64)page, page_ref_count(page));
 			set_page_count(page, 0);
-			set_page_state(page, MAIO_PAGE_FREE);
+			//set_page_state(page, MAIO_PAGE_FREE);
 			assert(get_maio_elem_order(__compound_head(page, 0)) == 0);
 			maio_free_elem(kbase, 0);
 		}

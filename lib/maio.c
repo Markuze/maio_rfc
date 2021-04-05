@@ -24,6 +24,7 @@
 
 #endif
 
+#define MAIO_DEBUG
 #if defined MAIO_DEBUG
 #define trace_debug trace_printk
 #else
@@ -692,20 +693,27 @@ int maio_post_tx_page(void *idx)
 			continue;
 		}
 
+
 		if (unlikely(!is_maio_page(page))) {
-#if 0
-	#TODO: Add the copy option.
-			char *buff = alloc_copy_buff(qp);
-			if (!buff) {
-				pr_err("Failed to alloc copy_buff!!!\n");
-				return 0;
+
+			if (PageHead(page)) {
+				void *buff = mag_alloc_elem(&global_maio.mag[order2idx(0)]);
+				set_maio_is_io(page);
+
+				if (!buff)
+					return 0;
+
+				buff = (void *)((u64)buff + maio_get_page_headroom(NULL));
+				page = virt_to_page(buff);
+
+				memcpy(buff, kaddr, len);
+				kaddr = buff;
+				trace_debug("copy to using page %llx[%d] addr %llx\n",
+						(u64)page, page_ref_count(page), (u64)kaddr);
+			} else {
+				panic("This shit cant happen!\n");
 			}
-			memcpy(buff, kaddr, len);
-			kaddr = buff;
-			copy = 1;
-#endif
-			set_maio_is_io(page);
-			init_page_count(page);
+			//init_page_count(page);
 		}
 
 		//set_page_state(page, MAIO_PAGE_TX);
@@ -1200,7 +1208,7 @@ static int maio_map_show(struct seq_file *m, void *v)
         return 0;
 }
 
-#define MAIO_VERSION	"v0.2-teardown-io"
+#define MAIO_VERSION	"v0.3-teardown"
 static int maio_version_show(struct seq_file *m, void *v)
 {
 	seq_printf(m, "%s\n", MAIO_VERSION);

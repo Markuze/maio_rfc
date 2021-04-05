@@ -568,14 +568,14 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 		return 0;
 	}
 
-	trace_debug("using page %llx addr %llx, len %d [%d]\n", (u64)page, (u64)addr, len, copy);
+	trace_debug("kaddr %llx, len %d [%d]\n", (u64)addr, len, copy);
 	if (copy) {
-		void *buff = mag_alloc_elem(&global_maio.mag[order2idx(0)]);
-		if (!buff)
-			return 0;
+		void *buff;
+
+		page = maio_alloc_page();
+		buff = page_address(page);
 
 		buff = (void *)((u64)buff + maio_get_page_headroom(NULL));
-		page = virt_to_page(buff);
 
 		memcpy(buff, addr, len);
 		addr = buff;
@@ -693,22 +693,31 @@ int maio_post_tx_page(void *idx)
 			continue;
 		}
 
+		if (unlikely( ! page_ref_count(page))) {
+			trace_debug("Zero fefcount page %llx[%d] addr %llx -- reseting \n",
+					(u64)page, page_ref_count(page), (u64)kaddr);
+			init_page_count(page);
+		}
 
 		if (unlikely(!is_maio_page(page))) {
 
 			if (PageHead(page)) {
-				void *buff = mag_alloc_elem(&global_maio.mag[order2idx(0)]);
+				void *buff;
+
 				set_maio_is_io(page);
 
-				if (!buff)
+				page = maio_alloc_page();
+				if (!page)
 					return 0;
+				buff = page_address(page);
+
 
 				buff = (void *)((u64)buff + maio_get_page_headroom(NULL));
-				page = virt_to_page(buff);
 
+				len = PAGE_SIZE - ((u64)kaddr & PAGE_MASK);
 				memcpy(buff, kaddr, len);
 				kaddr = buff;
-				trace_debug("copy to using page %llx[%d] addr %llx\n",
+				trace_debug("copy %u to using page %llx[%d] addr %llx\n", len,
 						(u64)page, page_ref_count(page), (u64)kaddr);
 			} else {
 				panic("This shit cant happen!\n");

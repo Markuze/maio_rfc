@@ -26,7 +26,7 @@
 
 #define MAIO_DEBUG
 #if defined MAIO_DEBUG
-#define trace_debug trace_printk
+#define trace_debug pr_err
 #else
 #define trace_debug(...)
 #endif

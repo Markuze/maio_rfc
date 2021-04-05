@@ -64,10 +64,10 @@ struct common_ring_info {
 };
 
 struct meta_pages_0 {
-	u16 nr_pages;
-	u16 stride;
-	u16 headroom;
-	u16 flags;
+	u32 nr_pages;
+	u32 stride;
+	u32 headroom;
+	u32 flags;
 	u64 bufs[0];
 };
 

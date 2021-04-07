@@ -867,9 +867,6 @@ static inline bool is_maio_page(struct page *page)
 
 	/* We exclude Head Pages from I/O */
 	if (PageHead(page)) {
-		if (unlikely(get_maio_uaddr(page))) {
-			pr_err("WTF? %llx ?\n", get_maio_uaddr(page));
-		}
 		return 0;
 	}
 	return get_maio_uaddr(page) ? 1 : 0;

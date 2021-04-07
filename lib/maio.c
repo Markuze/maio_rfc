@@ -106,7 +106,7 @@ static inline void set_page_state(struct page *page, u64 new_state)
 	*state = new_state;
 }
 
-static inline u64 get_page_state(struct page *page)
+static inline u32 get_page_state(struct page *page)
 {
 	u32 *state = page2track(page);
 	return *state;
@@ -387,7 +387,7 @@ struct page *maio_alloc_pages(size_t order)
 	assert(buffer != NULL);//should not happen
 	page =  (buffer) ? virt_to_page(buffer) : ERR_PTR(-ENOMEM);
 	if (likely( ! IS_ERR_OR_NULL(page))) {
-		if (unlikely(!(page_ref_count(page) == 0))) {
+		if (unlikely((page_ref_count(page) != 0))) {
 			trace_printk("%d:%s:%llx :%s\n", smp_processor_id(), __FUNCTION__, (u64)page, PageHead(page)?"HEAD":"");
 			trace_printk("%d:%s:%llx[%d]%llx\n", smp_processor_id(),
 					__FUNCTION__, (u64)page, page_ref_count(page), (u64)page_address(page));
@@ -395,6 +395,10 @@ struct page *maio_alloc_pages(size_t order)
 		}
 		init_page_count(page);
 		assert(is_maio_page(page));
+		if (unlikely(get_page_state(page) != MAIO_PAGE_FREE)) {
+			pr_err("ERROR: Page %llx state %x uaddr %llx\n", (u64)page, get_page_state(page), get_maio_uaddr(page));
+			pr_err("%d:%s:%llx :%s\n", smp_processor_id(), __FUNCTION__, (u64)page, PageHead(page)?"HEAD":"");
+		}
 		assert(get_page_state(page) == MAIO_PAGE_FREE);
 		set_page_state(page, MAIO_PAGE_RX);
 	}
@@ -720,6 +724,7 @@ int maio_post_tx_page(void *idx)
 		}
 
 		if (unlikely( ! page_ref_count(page))) {
+			assert(!get_page_state(page));
 			trace_printk("TX] Zero fefcount page %llx[%d] addr %llx -- reseting \n",
 					(u64)page, page_ref_count(page), (u64)kaddr);
 			init_page_count(page);
@@ -758,8 +763,14 @@ int maio_post_tx_page(void *idx)
 		md--;
 
 		if (unlikely(md->poison != MAIO_POISON)) {
-			pr_err("NO MAIO-POISON Found [%llx] -- Please make sure to put the buffer\n", uaddr);
-			put_page(page);
+			pr_err("NO MAIO-POISON <%x>Found [%llx] -- Please make sure to put the buffer\n"
+				"page %llx: %s:%s %llx ",
+				md->poison, uaddr, (u64)page,
+				is_maio_page(page)?"MAIO":"OTHER",
+				PageHead(page)?"HEAD":"Tail",
+				get_maio_uaddr(page));
+
+			panic("This should not happen\n");
 			continue;
 		}
 //TODO: Consider adding ERR flags to ring entry.
@@ -1029,6 +1040,7 @@ static inline ssize_t maio_add_pages_0(struct file *file, const char __user *buf
 			//	(u64)page, page_ref_count(page));
 			//maio_cache_head(page);
 			set_maio_is_io(page);
+			assert(!is_maio_page(page));
 			//memset(page_address(page), 0, PAGE_SIZE);
 		} else {
 			//trace_printk("[%ld]Adding %llx [%llx]  - P %llx[%d]\n", len, (u64 )kbase, meta->bufs[len],
@@ -1036,6 +1048,7 @@ static inline ssize_t maio_add_pages_0(struct file *file, const char __user *buf
 			set_page_count(page, 0);
 			set_page_state(page, MAIO_PAGE_FREE);
 			assert(get_maio_elem_order(__compound_head(page, 0)) == 0);
+			assert(is_maio_page(page));
 			maio_free_elem(kbase, 0);
 		}
 	}

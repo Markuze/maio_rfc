@@ -639,9 +639,10 @@ static void bad_page(struct page *page, const char *reason,
 
 	pr_alert("BUG: Bad page state in process %s  pfn:%05lx\n",
 		current->comm, page_to_pfn(page));
-	pr_alert("%llx [%llx] : %s\n",
+	pr_alert("%llx [%llx] : %s : %s\n",
 		(u64)page, (u64)compound_head(page),
-		is_maio_page(page) ? "MAIO":"PAGE_ALLOCATOR");
+		is_maio_page(page) ? "MAIO":"PAGE_ALLOCATOR",
+		PageCompound(page) ? "Single" : "Compound");
 	__dump_page(page, reason);
 	bad_flags &= page->flags;
 	if (bad_flags)
@@ -4950,10 +4951,9 @@ EXPORT_SYMBOL(page_frag_alloc);
  */
 void page_frag_free(void *addr)
 {
-	struct page *page = virt_to_head_page(addr);
+	struct page *page = virt_to_page(addr);
 
 	if (is_maio_page(page)) {
-		page = virt_to_page(addr);
 		if (unlikely(put_page_testzero(page)))
 			maio_frag_free(addr);
 	/*	else
@@ -4962,6 +4962,8 @@ void page_frag_free(void *addr)
 
 	*/
 		return;
+	} else {
+		page = compound_head(page);
 	}
 
 	/* Allow this, make sure refcounts are O.K -

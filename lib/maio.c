@@ -24,9 +24,8 @@
 
 #endif
 
-#define MAIO_DEBUG
 #if defined MAIO_DEBUG
-#define trace_debug pr_err
+#define trace_debug trace_printk
 #else
 #define trace_debug(...)
 #endif
@@ -368,14 +367,14 @@ struct page *maio_alloc_pages(size_t order)
 	assert(buffer != NULL);//should not happen
 	page =  (buffer) ? virt_to_page(buffer) : ERR_PTR(-ENOMEM);
 	if (likely( ! IS_ERR_OR_NULL(page))) {
-		if (!(page_ref_count(page) == 0)) {
+		if (unlikely(!(page_ref_count(page) == 0))) {
 			trace_printk("%d:%s:%llx :%s\n", smp_processor_id(), __FUNCTION__, (u64)page, PageHead(page)?"HEAD":"");
 			trace_printk("%d:%s:%llx[%d]%llx\n", smp_processor_id(),
 					__FUNCTION__, (u64)page, page_ref_count(page), (u64)page_address(page));
 			panic("P %llx: %llx  has %d refcnt\n", (u64)page, (u64)page_address(page), page_ref_count(page));
 		}
-		//assert(is_maio_page(page));
 		init_page_count(page);
+		assert(is_maio_page(page));
 	}
 	//trace_printk("%d:%s: %pS\n", smp_processor_id(), __FUNCTION__, __builtin_return_address(0));
 	//trace_printk("%d:%s:%llx\n", smp_processor_id(), __FUNCTION__, (u64)page);
@@ -579,7 +578,7 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 
 		memcpy(buff, addr, len);
 		addr = buff;
-		trace_debug("copy to using page %llx addr %llx\n", (u64)page, (u64)addr);
+		trace_debug("RX: copy to page %llx addr %llx\n", (u64)page, (u64)addr);
 
 		/* the orig copy is not used so ignore */
 	} else {
@@ -587,6 +586,7 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 		page = virt_to_page(addr);
 		get_page(page);
 	}
+
 
 	assert(uaddr2addr(addr2uaddr(addr)) == addr);
 	md = addr;
@@ -597,11 +597,12 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 	qp->rx_ring[qp->rx_counter & (qp->rx_sz -1)] = addr2uaddr(addr);
 	++qp->rx_counter;
 
-	trace_debug("%d:Posting[%lu] %s:%llx[%u]%llx{%d}\n", smp_processor_id(),
+	trace_debug("%d:RX[%lu] %s:%llx[%u]%llx{%d}\n", smp_processor_id(),
 			qp->rx_counter & (qp->rx_sz -1),
 			copy ? "COPY" : "ZC",
 			(u64)addr, len,
 			addr2uaddr(addr), page_ref_count(page));
+	trace_printk("RX: page %llx [%d]\n", (u64)page, page_ref_count(page));
 
 	return 1; //TODO: When buffer taken. put page of orig.
 }
@@ -694,7 +695,7 @@ int maio_post_tx_page(void *idx)
 		}
 
 		if (unlikely( ! page_ref_count(page))) {
-			trace_debug("Zero fefcount page %llx[%d] addr %llx -- reseting \n",
+			trace_printk("TX] Zero fefcount page %llx[%d] addr %llx -- reseting \n",
 					(u64)page, page_ref_count(page), (u64)kaddr);
 			init_page_count(page);
 		}
@@ -717,12 +718,11 @@ int maio_post_tx_page(void *idx)
 				len = PAGE_SIZE - ((u64)kaddr & PAGE_MASK);
 				memcpy(buff, kaddr, len);
 				kaddr = buff;
-				trace_debug("copy %u to using page %llx[%d] addr %llx\n", len,
+				trace_printk("TX] :COPY %u to page %llx[%d] addr %llx\n", len,
 						(u64)page, page_ref_count(page), (u64)kaddr);
 			} else {
 				panic("This shit cant happen!\n");
 			}
-			//init_page_count(page);
 		}
 
 		//set_page_state(page, MAIO_PAGE_TX);
@@ -743,8 +743,8 @@ int maio_post_tx_page(void *idx)
 				(u64)kaddr, page_ref_count(virt_to_page(kaddr)),
 				(u64)uaddr, md->len, size, md->poison);
 */
-		trace_debug("Sending %llx [%d]from user %llx [%d]\n",
-				(u64)kaddr, page_ref_count(page),
+		trace_printk("TX %llx/%llx [%d]from user %llx [#%d]\n",
+				(u64)kaddr, (u64)page, page_ref_count(page),
 				(u64)uaddr, cnt);
 		if (unlikely(((uaddr & (PAGE_SIZE -1)) + len) > PAGE_SIZE)) {
 			pr_err("Buffer to Long [%llx] len %u klen = %u\n", uaddr, md->len, len);

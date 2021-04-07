@@ -815,6 +815,7 @@ static inline void maio_put_page(struct page *page)
 	/*TODO: Need to find relevant head on multipage allocs*/
 	if (put_page_testzero(page))
 		maio_page_free(page);
+	VM_BUG_ON_PAGE(page_ref_count(page) > 4, page);
 }
 
 static inline void maio_get_page(struct page *page)
@@ -824,6 +825,7 @@ static inline void maio_get_page(struct page *page)
 	VM_BUG_ON_PAGE(page_ref_count(page) < 1, page);
 	VM_BUG_ON_PAGE(PageHead(page), page);
 	page_ref_inc(page);
+	VM_BUG_ON_PAGE(page_ref_count(page) > 4, page);
 }
 
 static inline void set_maio_is_io(struct page *page)

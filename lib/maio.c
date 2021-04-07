@@ -607,9 +607,7 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 
 		/* the orig copy is not used so ignore */
 	} else {
-		/* We are using it so get*/
 		page = virt_to_page(addr);
-		get_page(page);
 	}
 
 

@@ -35,6 +35,7 @@ extern volatile bool maio_configured;
 extern struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
 
 /******** MAIO PAGE PRIVATE FLAGS ****************/
+#define MAIO_PAGE_HEAD 0xF000
 #define MAIO_PAGE_MBUF 0xF00
 #define MAIO_PAGE_FREE 0x800   // storred in the magz
 #define MAIO_PAGE_IO   0x600   // TX|RX
@@ -77,7 +78,12 @@ struct user_matrix {
 };
 
 /*****************************************************************************/
+struct io_track {
+	char unused[256]; //1/4K
+	u32	map[512]; //2K
+};
 
+/******************************************************************************/
 struct maio_cached_buffer {
 	char headroom[256];
 	struct list_head list;

@@ -83,18 +83,33 @@ static struct umem_region_mtt *cached_mtt;
 static struct task_struct *maio_tx_thread[MAX_DEV_NUM];
 #endif
 
-static inline void set_page_state(struct page *page, u64 state)
+static struct io_track unaligned;
+
+static inline u32* page2track(struct page *page)
 {
-	u64 *states	= page_address((__compound_head(page, 0)));
-	int idx 	= (((u64)page_address(page)) & HUGE_OFFSET) >> PAGE_SHIFT;//0-512
-	states[idx] = state;
+	struct io_track *track;
+	int idx;
+
+	if (likely(get_maio_uaddr(page) & IS_MAIO_MASK))
+		track = page_address((__compound_head(page, 0)));
+	else
+		track = &unaligned;
+	idx 	= (((u64)page_address(page)) & HUGE_OFFSET) >> PAGE_SHIFT;//0-512
+
+	assert(idx <= 512);
+	return &track->map[idx];
+}
+
+static inline void set_page_state(struct page *page, u64 new_state)
+{
+	u32 *state = page2track(page);
+	*state = new_state;
 }
 
 static inline u64 get_page_state(struct page *page)
 {
-	u64 *states	= page_address((__compound_head(page, 0)));
-	int idx 	= (((u64)page_address(page)) & HUGE_OFFSET) >> PAGE_SHIFT;//0-512
-	return states[idx];
+	u32 *state = page2track(page);
+	return *state;
 }
 
 static inline void flush_all_mtts(void)
@@ -290,6 +305,8 @@ void maio_page_free(struct page *page)
 	//trace_printk("%d:%s: %llx %pS\n", smp_processor_id(), __FUNCTION__, (u64)page, __builtin_return_address(0));
 	assert(is_maio_page(page));
 	assert(page_ref_count(page) == 0);
+	assert(get_page_state(page) & MAIO_PAGE_IO);
+	set_page_state(page, MAIO_PAGE_FREE);
 	put_buffers(page_address(page), get_maio_elem_order(page));
 	return;
 }
@@ -306,12 +323,15 @@ void maio_frag_free(void *addr)
 	//trace_printk("%d:%s: %llx %pS\n", smp_processor_id(), __FUNCTION__, (u64)page, __builtin_return_address(0));
 	assert(is_maio_page(page));
 	assert(page_ref_count(page) == 0);
+	assert(get_page_state(page) & MAIO_PAGE_IO);
+	set_page_state(page, MAIO_PAGE_FREE);
 	put_buffers(page_address(page), get_maio_elem_order(page));
 
 	return;
 }
 EXPORT_SYMBOL(maio_frag_free);
 
+#if 0
 static inline void replenish_from_cache(size_t order)
 {
 	int i;
@@ -329,7 +349,7 @@ static inline void replenish_from_cache(size_t order)
 		page++;
 	}
 }
-
+#endif
 //TODO: Its possible to store headroom per page.
 u16 maio_get_page_headroom(struct page *page)
 {
@@ -375,6 +395,8 @@ struct page *maio_alloc_pages(size_t order)
 		}
 		init_page_count(page);
 		assert(is_maio_page(page));
+		assert(get_page_state(page) == MAIO_PAGE_FREE);
+		set_page_state(page, MAIO_PAGE_RX);
 	}
 	//trace_printk("%d:%s: %pS\n", smp_processor_id(), __FUNCTION__, __builtin_return_address(0));
 	//trace_printk("%d:%s:%llx\n", smp_processor_id(), __FUNCTION__, (u64)page);
@@ -572,6 +594,9 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 		void *buff;
 
 		page = maio_alloc_page();
+		/* For the assert */
+		set_page_state(page, MAIO_PAGE_RX);
+
 		buff = page_address(page);
 
 		buff = (void *)((u64)buff + maio_get_page_headroom(NULL));
@@ -588,6 +613,8 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 	}
 
 
+	assert(get_page_state(page) == MAIO_PAGE_RX);
+	set_page_state(page, MAIO_PAGE_USER);
 	assert(uaddr2addr(addr2uaddr(addr)) == addr);
 	md = addr;
 	md--;
@@ -710,6 +737,8 @@ int maio_post_tx_page(void *idx)
 				page = maio_alloc_page();
 				if (!page)
 					return 0;
+				/* For the assert */
+				set_page_state(page, MAIO_PAGE_USER);
 				buff = page_address(page);
 
 
@@ -725,7 +754,8 @@ int maio_post_tx_page(void *idx)
 			}
 		}
 
-		//set_page_state(page, MAIO_PAGE_TX);
+		assert(get_page_state(page) <= MAIO_PAGE_USER);
+		set_page_state(page, MAIO_PAGE_TX);
 		md = kaddr;
 		md--;
 
@@ -1006,7 +1036,7 @@ static inline ssize_t maio_add_pages_0(struct file *file, const char __user *buf
 			//trace_printk("[%ld]Adding %llx [%llx]  - P %llx[%d]\n", len, (u64 )kbase, meta->bufs[len],
 			//		(u64)page, page_ref_count(page));
 			set_page_count(page, 0);
-			//set_page_state(page, MAIO_PAGE_FREE);
+			set_page_state(page, MAIO_PAGE_FREE);
 			assert(get_maio_elem_order(__compound_head(page, 0)) == 0);
 			maio_free_elem(kbase, 0);
 		}

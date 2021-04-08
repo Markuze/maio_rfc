@@ -83,10 +83,14 @@ static struct umem_region_mtt *cached_mtt;
 static struct task_struct *maio_tx_thread[MAX_DEV_NUM];
 #endif
 
-static struct io_track unaligned;
+static struct io_track unaligned ____cacheline_aligned_in_smp;
 
-static inline u32* page2track(struct page *page)
+static inline u64* page2track(struct page *page)
 {
+	u64 *track = page_address(&page[1]);
+	--track;
+	return track;
+/*
 	struct io_track *track;
 	int idx;
 
@@ -98,17 +102,18 @@ static inline u32* page2track(struct page *page)
 
 	assert(idx <= 512);
 	return &track->map[idx];
+*/
 }
 
 static inline void set_page_state(struct page *page, u64 new_state)
 {
-	u32 *state = page2track(page);
+	u64 *state = page2track(page);
 	*state = new_state;
 }
 
-static inline u32 get_page_state(struct page *page)
+static inline u64 get_page_state(struct page *page)
 {
-	u32 *state = page2track(page);
+	u64 *state = page2track(page);
 	return *state;
 }
 
@@ -305,7 +310,12 @@ void maio_page_free(struct page *page)
 	//trace_printk("%d:%s: %llx %pS\n", smp_processor_id(), __FUNCTION__, (u64)page, __builtin_return_address(0));
 	assert(is_maio_page(page));
 	assert(page_ref_count(page) == 0);
-	assert(get_page_state(page) & MAIO_PAGE_IO);
+	//assert(get_page_state(page) & MAIO_PAGE_IO);
+	if (unlikely(! (get_page_state(page) & MAIO_PAGE_IO))) {
+		pr_err("ERROR: Page %llx state %llx uaddr %llx\n", (u64)page, get_page_state(page), get_maio_uaddr(page));
+		pr_err("%d:%s:%llx :%s\n", smp_processor_id(), __FUNCTION__, (u64)page, PageHead(page)?"HEAD":"");
+	}
+
 	set_page_state(page, MAIO_PAGE_FREE);
 	put_buffers(page_address(page), get_maio_elem_order(page));
 	return;
@@ -323,7 +333,11 @@ void maio_frag_free(void *addr)
 	//trace_printk("%d:%s: %llx %pS\n", smp_processor_id(), __FUNCTION__, (u64)page, __builtin_return_address(0));
 	assert(is_maio_page(page));
 	assert(page_ref_count(page) == 0);
-	assert(get_page_state(page) & MAIO_PAGE_IO);
+	//assert(get_page_state(page) & MAIO_PAGE_IO);
+	if (unlikely(! (get_page_state(page) & MAIO_PAGE_IO))) {
+		pr_err("ERROR: Page %llx state %llx uaddr %llx\n", (u64)page, get_page_state(page), get_maio_uaddr(page));
+		pr_err("%d:%s:%llx :%s\n", smp_processor_id(), __FUNCTION__, (u64)page, PageHead(page)?"HEAD":"");
+	}
 	set_page_state(page, MAIO_PAGE_FREE);
 	put_buffers(page_address(page), get_maio_elem_order(page));
 
@@ -396,7 +410,7 @@ struct page *maio_alloc_pages(size_t order)
 		init_page_count(page);
 		assert(is_maio_page(page));
 		if (unlikely(get_page_state(page) != MAIO_PAGE_FREE)) {
-			pr_err("ERROR: Page %llx state %x uaddr %llx\n", (u64)page, get_page_state(page), get_maio_uaddr(page));
+			pr_err("ERROR: Page %llx state %llx uaddr %llx\n", (u64)page, get_page_state(page), get_maio_uaddr(page));
 			pr_err("%d:%s:%llx :%s\n", smp_processor_id(), __FUNCTION__, (u64)page, PageHead(page)?"HEAD":"");
 		}
 		assert(get_page_state(page) == MAIO_PAGE_FREE);
@@ -564,10 +578,9 @@ static inline int filter_packet(void *addr)
 	return maio_filter(addr);
 }
 
-static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32 len, int copy)
+static inline int __maio_post_rx_page(struct net_device *netdev, struct page *page, void *addr, u32 len)
 {
 	u64 qp_idx = get_rx_qp_idx(netdev);
-	struct page *page;
 	struct io_md *md;
 	struct percpu_maio_dev_qp *dev_qp = this_cpu_ptr(&maio_dev_qp);
 	struct percpu_maio_qp *qp;
@@ -594,7 +607,7 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 	}
 
 	trace_debug("kaddr %llx, len %d [%d]\n", (u64)addr, len, copy);
-	if (copy) {
+	if (!page) {
 		void *buff;
 
 		page = maio_alloc_page();
@@ -610,10 +623,11 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 		trace_debug("RX: copy to page %llx addr %llx\n", (u64)page, (u64)addr);
 
 		/* the orig copy is not used so ignore */
-	} else {
-		page = virt_to_page(addr);
 	}
 
+	if (unlikely(get_page_state(page) != MAIO_PAGE_RX)) {
+		pr_err("ERROR: Page %llx state %llx uaddr %llx\n", (u64)page, get_page_state(page), get_maio_uaddr(page));
+	}
 
 	assert(get_page_state(page) == MAIO_PAGE_RX);
 	set_page_state(page, MAIO_PAGE_USER);
@@ -638,7 +652,8 @@ static inline int __maio_post_rx_page(struct net_device *netdev, void *addr, u32
 
 int maio_post_rx_page_copy(struct net_device *netdev, void *addr, u32 len)
 {
-	return __maio_post_rx_page(netdev, addr, len, 1);
+	/* NULL means copy data to MAIO page*/
+	return __maio_post_rx_page(netdev, NULL, addr, len);
 }
 EXPORT_SYMBOL(maio_post_rx_page_copy);
 
@@ -646,7 +661,13 @@ EXPORT_SYMBOL(maio_post_rx_page_copy);
 int maio_post_rx_page(struct net_device *netdev, void *addr, u32 len)
 {
 	struct page* page = virt_to_page(addr);
-	return __maio_post_rx_page(netdev, addr, len, !is_maio_page(page));
+
+	if (is_maio_page(page))
+		get_page(page);
+	else
+		page = NULL;
+
+	return __maio_post_rx_page(netdev, page, addr, len);
 }
 EXPORT_SYMBOL(maio_post_rx_page);
 
@@ -733,9 +754,10 @@ int maio_post_tx_page(void *idx)
 		if (unlikely(!is_maio_page(page))) {
 
 			if (PageHead(page)) {
-				void *buff;
+				struct io_md *buff;
 
 				set_maio_is_io(page);
+				set_page_state(page, MAIO_POISON); // Need to add on NEW USER pages.
 
 				page = maio_alloc_page();
 				if (!page)
@@ -744,20 +766,31 @@ int maio_post_tx_page(void *idx)
 				set_page_state(page, MAIO_PAGE_USER);
 				buff = page_address(page);
 
-
 				buff = (void *)((u64)buff + maio_get_page_headroom(NULL));
 
-				len = PAGE_SIZE - ((u64)kaddr & PAGE_MASK);
-				memcpy(buff, kaddr, len);
-				kaddr = buff;
-				trace_printk("TX] :COPY %u to page %llx[%d] addr %llx\n", len,
+				md = kaddr;
+				md--;
+
+				len = md->len;
+				len += sizeof(*md);
+
+				pr_err("TX] :COPY %u [%u] to page %llx[%d] addr %llx\n", len,
+						maio_get_page_headroom(NULL),
 						(u64)page, page_ref_count(page), (u64)kaddr);
+				assert(len <= (PAGE_SIZE - maio_get_page_headroom(NULL)));
+
+				memcpy(buff, md, len);
+				kaddr = &buff[1];
 			} else {
-				panic("This shit cant happen!\n");
+				panic("This shit cant happen!\n"); //uaddr2addr would fail first
 			}
 		}
 
-		assert(get_page_state(page) <= MAIO_PAGE_USER);
+		if (unlikely(get_page_state(page) > MAIO_PAGE_USER)) {
+			pr_err("ERROR: Page %llx state %llx uaddr %llx\n", (u64)page, get_page_state(page), get_maio_uaddr(page));
+			pr_err("%d:%s:%llx :%s\n", smp_processor_id(), __FUNCTION__, (u64)page, PageHead(page)?"HEAD":"");
+		}
+
 		set_page_state(page, MAIO_PAGE_TX);
 		md = kaddr;
 		md--;
@@ -1040,6 +1073,7 @@ static inline ssize_t maio_add_pages_0(struct file *file, const char __user *buf
 			//	(u64)page, page_ref_count(page));
 			//maio_cache_head(page);
 			set_maio_is_io(page);
+			set_page_state(page, MAIO_POISON); // Need to add on NEW USER pages.
 			assert(!is_maio_page(page));
 			//memset(page_address(page), 0, PAGE_SIZE);
 		} else {

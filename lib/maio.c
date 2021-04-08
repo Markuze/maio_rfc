@@ -310,11 +310,11 @@ void maio_page_free(struct page *page)
 	//trace_printk("%d:%s: %llx %pS\n", smp_processor_id(), __FUNCTION__, (u64)page, __builtin_return_address(0));
 	assert(is_maio_page(page));
 	assert(page_ref_count(page) == 0);
-	//assert(get_page_state(page) & MAIO_PAGE_IO);
 	if (unlikely(! (get_page_state(page) & MAIO_PAGE_IO))) {
 		pr_err("ERROR: Page %llx state %llx uaddr %llx\n", (u64)page, get_page_state(page), get_maio_uaddr(page));
 		pr_err("%d:%s:%llx :%s\n", smp_processor_id(), __FUNCTION__, (u64)page, PageHead(page)?"HEAD":"");
 	}
+	assert(get_page_state(page) & MAIO_PAGE_IO);
 
 	set_page_state(page, MAIO_PAGE_FREE);
 	put_buffers(page_address(page), get_maio_elem_order(page));
@@ -333,11 +333,11 @@ void maio_frag_free(void *addr)
 	//trace_printk("%d:%s: %llx %pS\n", smp_processor_id(), __FUNCTION__, (u64)page, __builtin_return_address(0));
 	assert(is_maio_page(page));
 	assert(page_ref_count(page) == 0);
-	//assert(get_page_state(page) & MAIO_PAGE_IO);
 	if (unlikely(! (get_page_state(page) & MAIO_PAGE_IO))) {
 		pr_err("ERROR: Page %llx state %llx uaddr %llx\n", (u64)page, get_page_state(page), get_maio_uaddr(page));
 		pr_err("%d:%s:%llx :%s\n", smp_processor_id(), __FUNCTION__, (u64)page, PageHead(page)?"HEAD":"");
 	}
+	assert(get_page_state(page) & MAIO_PAGE_IO);
 	set_page_state(page, MAIO_PAGE_FREE);
 	put_buffers(page_address(page), get_maio_elem_order(page));
 
@@ -645,7 +645,6 @@ static inline int __maio_post_rx_page(struct net_device *netdev, struct page *pa
 			copy ? "COPY" : "ZC",
 			(u64)addr, len,
 			addr2uaddr(addr), page_ref_count(page));
-	trace_printk("RX: page %llx [%d]\n", (u64)page, page_ref_count(page));
 
 	return 1; //TODO: When buffer taken. put page of orig.
 }
@@ -774,7 +773,7 @@ int maio_post_tx_page(void *idx)
 				len = md->len;
 				len += sizeof(*md);
 
-				pr_err("TX] :COPY %u [%u] to page %llx[%d] addr %llx\n", len,
+				trace_debug("TX] :COPY %u [%u] to page %llx[%d] addr %llx\n", len,
 						maio_get_page_headroom(NULL),
 						(u64)page, page_ref_count(page), (u64)kaddr);
 				assert(len <= (PAGE_SIZE - maio_get_page_headroom(NULL)));
@@ -810,12 +809,8 @@ int maio_post_tx_page(void *idx)
 
 		len 	= md->len + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 		size 	= maio_stride - ((u64)kaddr & (maio_stride -1));
-/*
-		trace_debug("Sending kaddr %llx [%d]from user %llx: len %d[size %d] poison %0x\n",
-				(u64)kaddr, page_ref_count(virt_to_page(kaddr)),
-				(u64)uaddr, md->len, size, md->poison);
-*/
-		trace_printk("TX %llx/%llx [%d]from user %llx [#%d]\n",
+
+		trace_debug("TX %llx/%llx [%d]from user %llx [#%d]\n",
 				(u64)kaddr, (u64)page, page_ref_count(page),
 				(u64)uaddr, cnt);
 		if (unlikely(((uaddr & (PAGE_SIZE -1)) + len) > PAGE_SIZE)) {

@@ -594,15 +594,15 @@ static inline int __maio_post_rx_page(struct net_device *netdev, struct page *pa
 
 	qp = &dev_qp->qp[qp_idx];
 
+	if (filter_packet(addr)) {
+		//trace_printk("skiping...\n");
+		return 0;
+	}
+
 	if (qp->rx_ring[qp->rx_counter & (qp->rx_sz -1)]) {
 		trace_printk("[%d]User to slow. dropping post of %llx:%llx\n",
 				smp_processor_id(), (u64)addr, addr2uaddr(addr));
 		//TODO: put_page(virt_to_page(addr)) if 1 returned.
-		return 0;
-	}
-
-	if (filter_packet(addr)) {
-		//trace_printk("skiping...\n");
 		return 0;
 	}
 
@@ -624,7 +624,15 @@ static inline int __maio_post_rx_page(struct net_device *netdev, struct page *pa
 
 		/* the orig copy is not used so ignore */
 	}
-
+#if 0
+	/*
+		This is the right thing to do, but hv_net someties panics here wtf?!
+		Shitty M$ paravirt implementation. Thats why maio_post_rx_page looks like shit.
+	*/
+	else {
+		get_page(page);
+	}
+#endif
 	if (unlikely(get_page_state(page) != MAIO_PAGE_RX)) {
 		pr_err("ERROR: Page %llx state %llx uaddr %llx\n", (u64)page, get_page_state(page), get_maio_uaddr(page));
 	}
@@ -666,7 +674,12 @@ int maio_post_rx_page(struct net_device *netdev, void *addr, u32 len)
 	else
 		page = NULL;
 
-	return __maio_post_rx_page(netdev, page, addr, len);
+	if ( ! __maio_post_rx_page(netdev, page, addr, len)) {
+		if (page)
+			put_page(page);
+		return 0;
+	}
+	return 1;
 }
 EXPORT_SYMBOL(maio_post_rx_page);
 
@@ -715,7 +728,8 @@ static unsigned tx_counter[MAX_DEV_NUM];
 int maio_post_tx_page(void *idx)
 {
 	u64 dev_idx = (u64)idx;
-	u64 netdev_idx = get_tx_netdev_idx(dev_idx);
+	//u64 netdev_idx = get_tx_netdev_idx(dev_idx);
+	u64 netdev_idx = dev_idx;
 	struct io_md *md;
 	struct sk_buff *skb_batch[TX_BATCH_SIZE];
 	struct percpu_maio_dev_qp *dev_qp = this_cpu_ptr(&maio_dev_qp);
@@ -959,6 +973,11 @@ static unsigned int atou(const char *s)
 	return i;
 }
 
+/*
+We accept a USER provided MTRX
+	*	Maybe provide a kernel matrix?
+
+*/
 static inline ssize_t init_user_rings(struct file *file, const char __user *buf,
                                     size_t size, loff_t *_pos)
 {
@@ -992,15 +1011,18 @@ static inline ssize_t init_user_rings(struct file *file, const char __user *buf,
 	kbase = uaddr2addr(base);
 	if (!kbase) {
 		/*TODO: Is this a thing ? */
-		pr_err("WARNING: Uaddr %llx is not found in MTT [0x%llx - 0x%llx) len %ld\n", base, cached_mtt->start, cached_mtt->end, len);
-		if ((rc = get_user_pages(base, ((PAGE_SIZE -1 + len) >> PAGE_SHIFT), FOLL_LONGTERM, &mtrx_pages[0], NULL)) < 0) {
+		pr_err("WARNING: Uaddr %llx is not found in MTT [0x%llx - 0x%llx) len %ld\n",
+			base, cached_mtt->start, cached_mtt->end, len);
+		if ((rc = get_user_pages(base, ((PAGE_SIZE -1 + len) >> PAGE_SHIFT),
+						FOLL_LONGTERM, &mtrx_pages[0], NULL)) < 0) {
 			pr_err("ERROR on get_user_pages %ld\n", rc);
 			return rc;
 		}
 		kbase = page_address(mtrx_pages[0]) + (base & (PAGE_SIZE -1));
 		//put_user_pages - follow MTT.
 	}
-	pr_err("MTRX is set to %llx[%llx] user %llx order [%d] rc = %ld\n", (u64)kbase, (u64)page_address(mtrx_pages[0]),
+	pr_err("MTRX is set to %llx[%llx] user %llx order [%d] rc = %ld\n",
+			(u64)kbase, (u64)page_address(mtrx_pages[0]),
 			base, compound_order(virt_to_head_page(kbase)), rc);
 
 	global_maio_matrix[dev_idx] = (struct user_matrix *)kbase;
@@ -1171,7 +1193,7 @@ static inline ssize_t maio_map_page(struct file *file, const char __user *buf,
 	kfree(kbuff);
 
 	if (!(mtt = kzalloc(sizeof(struct umem_region_mtt)
-				+ len * sizeof(struct page*), GFP_KERNEL)))
+				+ (len * sizeof(struct page*)), GFP_KERNEL)))
 		return -ENOMEM;
 
 	mtt->start	= base;
@@ -1208,14 +1230,15 @@ static inline ssize_t maio_map_page(struct file *file, const char __user *buf,
 		assert(!(uaddr & HUGE_OFFSET));
 		set_maio_uaddr(umem_pages[0], uaddr);
 
-		/* Allow for the Allocator to get elements on demand, flexible support for variable sizes */
+		/* Allow for the Allocator to get elements on demand, flexible support for variable sizes
 		if (cache)
 			maio_cache_hp(umem_pages[0]);
+		*/
 		//trace_printk("Added %llx:%llx (umem %llx:%llx)to MAIO\n", uaddr, (u64)page_address(umem_pages[0]),
 		//			get_maio_uaddr(umem_pages[0]), (u64)uaddr2addr(uaddr));
 	}
-	pr_err("%d: %s maio_maped U[%llx-%llx) K:[%llx-%llx)\n", smp_processor_id(), __FUNCTION__, mtt->start, mtt->end,
-			(u64)uaddr2addr(mtt->start), (u64)uaddr2addr(mtt->end));
+	pr_err("%d: %s maio_maped U[%llx-%llx) K:[%llx-%llx)\n", smp_processor_id(), __FUNCTION__,
+			mtt->start, mtt->end, (u64)uaddr2addr(mtt->start), (u64)uaddr2addr(mtt->end));
 /*
 	init_user_rings();
 	maio_configured = true;
@@ -1287,7 +1310,7 @@ static int maio_map_show(struct seq_file *m, void *v)
         return 0;
 }
 
-#define MAIO_VERSION	"v0.3-teardown"
+#define MAIO_VERSION	"v0.3-page-state"
 static int maio_version_show(struct seq_file *m, void *v)
 {
 	seq_printf(m, "%s\n", MAIO_VERSION);

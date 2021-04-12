@@ -34,10 +34,15 @@ struct mag_allocator {
 	u64 					lock_state;
 	struct list_head 			empty_list;
 	struct list_head 			full_list;
-	uint16_t 				empty_count;
-	uint16_t 				full_count;
+	uint32_t 				empty_count;
+	uint32_t 				full_count;
 	struct percpu_mag_pair	__percpu 	*pcp_pair; //Per Core instance x 2 (normal , and _bh)
 };
+
+static inline uint32_t mag_get_full_count(struct mag_allocator *allocator)
+{
+	return allocator->full_count;
+}
 
 void *mag_alloc_elem(struct mag_allocator *allocator);
 

@@ -49,9 +49,6 @@ static struct maio_magz global_maio;
 struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
 EXPORT_SYMBOL(global_maio_matrix);
 
-/*TODO: Remove*/
-static u64 maio_rx_post_cnt;
-
 static u16 maio_headroom = (0x800 -128);
 static u16 maio_stride = 0x1000;//4K
 
@@ -79,11 +76,30 @@ DEFINE_PER_CPU(struct percpu_maio_dev_qp, maio_dev_qp);
 static struct rb_root mtt_tree = RB_ROOT;
 static struct umem_region_mtt *cached_mtt;
 
+static unsigned long maio_mag_lwm  __read_mostly = 256;
+static unsigned long maio_mag_hwm  __read_mostly = ULONG_MAX;
+static bool lwm_triggered;
+
 #if 0
 static struct task_struct *maio_tx_thread[MAX_DEV_NUM];
 #endif
 
-static struct io_track unaligned ____cacheline_aligned_in_smp;
+static inline bool maio_hwm_crossed(void)
+{
+	return (mag_get_full_count(&global_maio.mag[0]) > maio_mag_hwm);
+}
+
+static inline bool maio_lwm_crossed(void)
+{
+	/* We should not spam the user with lwm triggers */
+	if (lwm_triggered)
+		return false;
+
+	if (mag_get_full_count(&global_maio.mag[0]) < maio_mag_lwm) {
+		lwm_triggered = true;
+	}
+	return lwm_triggered;
+}
 
 static inline u64* page2track(struct page *page)
 {
@@ -97,7 +113,7 @@ static inline u64* page2track(struct page *page)
 	if (likely(get_maio_uaddr(page) & IS_MAIO_MASK))
 		track = page_address((__compound_head(page, 0)));
 	else
-		track = &unaligned;
+
 	idx 	= (((u64)page_address(page)) & HUGE_OFFSET) >> PAGE_SHIFT;//0-512
 
 	assert(idx <= 512);
@@ -581,6 +597,7 @@ static inline int filter_packet(void *addr)
 static inline int __maio_post_rx_page(struct net_device *netdev, struct page *page, void *addr, u32 len)
 {
 	u64 qp_idx = get_rx_qp_idx(netdev);
+	struct page *refill = NULL;
 	struct io_md *md;
 	struct percpu_maio_dev_qp *dev_qp = this_cpu_ptr(&maio_dev_qp);
 	struct percpu_maio_qp *qp;
@@ -599,18 +616,60 @@ static inline int __maio_post_rx_page(struct net_device *netdev, struct page *pa
 		return 0;
 	}
 
+send_the_page:
 	if (qp->rx_ring[qp->rx_counter & (qp->rx_sz -1)]) {
 		trace_printk("[%d]User to slow. dropping post of %llx:%llx\n",
 				smp_processor_id(), (u64)addr, addr2uaddr(addr));
-		//TODO: put_page(virt_to_page(addr)) if 1 returned.
 		return 0;
 	}
 
-	trace_debug("kaddr %llx, len %d [%d]\n", (u64)addr, len, copy);
+	/* LWM crossed ask user to return some mem via TX */
+	if (unlikely(maio_lwm_crossed() && !refill)) {
+		trace_printk("LWM crossed [%d], sending request\n", mag_get_full_count(&global_maio.mag[0]));
+		refill = (void *)MAIO_POISON;
+
+		/*
+		user should check if address is MAIO_POISON,
+		this means that this is a request for a refill packet.
+		*/
+		qp->rx_ring[qp->rx_counter & (qp->rx_sz -1)] = MAIO_POISON;
+		++qp->rx_counter;
+
+		goto send_the_page;
+	}
+
+	/* HWM crossed return some mem to user */
+	if (unlikely(maio_hwm_crossed() && !refill)) {
+		void *buff;
+		trace_printk("LWM crossed [%d], sending page to user\n", mag_get_full_count(&global_maio.mag[0]));
+		//if hwm was crossed
+		refill = maio_alloc_page();
+		/* For the assert */
+		set_page_state(refill, MAIO_PAGE_USER);
+
+		buff = page_address(refill);
+
+		/*
+		user should check if address is page aligned, then md is not present
+		this means that this is a refill packet.
+		*/
+		qp->rx_ring[qp->rx_counter & (qp->rx_sz -1)] = addr2uaddr(buff);
+		++qp->rx_counter;
+
+		goto send_the_page;
+	}
+
+	trace_debug("kaddr %llx, len %d [%llx]\n", (u64)addr, len, (u64)page);
 	if (!page) {
 		void *buff;
 
 		page = maio_alloc_page();
+		if (unlikely(!page)) {
+			trace_printk("[%d]User to slow. dropping post of %llx:%llx\n",
+				smp_processor_id(), (u64)addr, addr2uaddr(addr));
+			return 0;
+		}
+
 		/* For the assert */
 		set_page_state(page, MAIO_PAGE_RX);
 
@@ -650,10 +709,9 @@ static inline int __maio_post_rx_page(struct net_device *netdev, struct page *pa
 
 	trace_debug("%d:RX[%lu] %s:%llx[%u]%llx{%d}\n", smp_processor_id(),
 			qp->rx_counter & (qp->rx_sz -1),
-			copy ? "COPY" : "ZC",
+			page ? "COPY" : "ZC",
 			(u64)addr, len,
 			addr2uaddr(addr), page_ref_count(page));
-
 	return 1; //TODO: When buffer taken. put page of orig.
 }
 
@@ -728,14 +786,14 @@ static unsigned tx_counter[MAX_DEV_NUM];
 int maio_post_tx_page(void *idx)
 {
 	u64 dev_idx = (u64)idx;
-	//u64 netdev_idx = get_tx_netdev_idx(dev_idx);
 	u64 netdev_idx = dev_idx;
 	struct io_md *md;
 	struct sk_buff *skb_batch[TX_BATCH_SIZE];
 	struct percpu_maio_dev_qp *dev_qp = this_cpu_ptr(&maio_dev_qp);
 	struct percpu_maio_qp *qp = &dev_qp->qp[dev_idx];
-	int copy = 0, cnt = 0;
 	u64 uaddr = 0;
+	int copy = 0, cnt = 0;
+	bool local_lwm = lwm_triggered;
 
 	assert(netdev_idx != -1);
 
@@ -759,7 +817,7 @@ int maio_post_tx_page(void *idx)
 
 		if (unlikely( ! page_ref_count(page))) {
 			assert(!get_page_state(page));
-			trace_printk("TX] Zero fefcount page %llx[%d] addr %llx -- reseting \n",
+			trace_debug("TX] Zero fefcount page %llx[%d] addr %llx -- reseting \n",
 					(u64)page, page_ref_count(page), (u64)kaddr);
 			init_page_count(page);
 		}
@@ -819,6 +877,15 @@ int maio_post_tx_page(void *idx)
 			panic("This should not happen\n");
 			continue;
 		}
+
+		/* A refill page from user following an lwm crosss */
+		if (unlikely(!md->len)) {
+			put_page(page);
+			local_lwm = false;
+
+			trace_printk(" Received page from user [%d]\n", mag_get_full_count(&global_maio.mag[0]));
+			continue;
+		}
 //TODO: Consider adding ERR flags to ring entry.
 
 		len 	= md->len + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
@@ -840,12 +907,15 @@ int maio_post_tx_page(void *idx)
 		if (unlikely(cnt >= TX_BATCH_SIZE))
 			break;
 	}
+
 	trace_debug("%d: Sending %d buffers. counter %d\n", smp_processor_id(), cnt, tx_counter[dev_idx]);
 	if (cnt)
 		copy = maio_xmit(maio_devs[netdev_idx], skb_batch, cnt);
 
 	tx_counter[dev_idx] = qp->tx_counter;
 	trace_debug("%d: Sending %d buffers. rc %d\n", smp_processor_id(), cnt, copy);
+
+	lwm_triggered = local_lwm;
 
 	//TODO: return #sent
 	return cnt;
@@ -1104,7 +1174,10 @@ static inline ssize_t maio_add_pages_0(struct file *file, const char __user *buf
 		}
 	}
 	kfree(kbuff);
+	maio_mag_hwm = mag_get_full_count(&global_maio.mag[0]);
+	maio_mag_hwm += (maio_mag_hwm >> 3); //+12% of initial
 
+	pr_err("%s} HWM %ld LWM %ld lwm trigger %s\n", __FUNCTION__, maio_mag_hwm, maio_mag_lwm, lwm_triggered ? "OFF": "ON");
 	return 0;
 }
 
@@ -1209,7 +1282,7 @@ static inline ssize_t maio_map_page(struct file *file, const char __user *buf,
 		//rc = get_user_pages(uaddr, (1 << HUGE_ORDER), FOLL_LONGTERM, &umem_pages[0], NULL);
 		//its enough to get the compound head
 		rc = get_user_pages(uaddr, 1 , FOLL_LONGTERM, &umem_pages[0], NULL);
-		trace_printk("[%ld]%llx[%llx:%d] rc: %d\n", rc, uaddr, (unsigned long long)umem_pages[0],
+		trace_debug("[%ld]%llx[%llx:%d] rc: %d\n", rc, uaddr, (unsigned long long)umem_pages[0],
 							compound_order(__compound_head(umem_pages[0], 0)),
 							page_ref_count(umem_pages[0]));
 
@@ -1300,9 +1373,9 @@ static int maio_map_show(struct seq_file *m, void *v)
 
 	/* TODO: make usefull */
 	if (global_maio_matrix[0]) {
-		seq_printf(m, "%llx %ld (%llx)\n",
+		seq_printf(m, "%llx %ld (%d)\n",
 			get_maio_uaddr(virt_to_head_page(global_maio_matrix[0])),
-			hp_cache_size, maio_rx_post_cnt);
+			hp_cache_size, mag_get_full_count(&global_maio.mag[0]));
 	} else {
 		seq_printf(m, "NOT CONFIGURED\n");
 	}
@@ -1310,7 +1383,7 @@ static int maio_map_show(struct seq_file *m, void *v)
         return 0;
 }
 
-#define MAIO_VERSION	"v0.3-page-state"
+#define MAIO_VERSION	"v0.4-refill"
 static int maio_version_show(struct seq_file *m, void *v)
 {
 	seq_printf(m, "%s\n", MAIO_VERSION);

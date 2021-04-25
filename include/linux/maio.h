@@ -102,6 +102,20 @@ struct maio_magz {
 	u32			num_pages;
 };
 
+struct maio_tx_thread {
+	struct task_struct *thread;
+	struct net_device *netdev;
+	unsigned long tx_counter;
+        u64 *tx_ring;
+	u32 tx_sz;
+	u32 dev_idx;
+	u32 ring_id;
+} ____cacheline_aligned_in_smp;
+
+struct maio_tx_threads {
+	struct maio_tx_thread tx_thread[NUM_MAX_RINGS];
+};
+
 struct percpu_maio_qp {
 	unsigned long rx_counter;
 	unsigned long tx_counter;

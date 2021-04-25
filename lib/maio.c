@@ -67,6 +67,7 @@ static LIST_HEAD(head_cache);
 DEFINE_SPINLOCK(head_cache_lock);
 static unsigned long head_cache_size;
 
+static struct maio_tx_threads	maio_tx_threads[MAX_DEV_NUM];
 static struct net_device *maio_devs[MAX_DEV_NUM] __read_mostly;
 static struct maio_dev_map dev_map;
 
@@ -82,9 +83,8 @@ static unsigned long maio_mag_lwm  __read_mostly = 1024;
 static unsigned long maio_mag_hwm  __read_mostly = ULONG_MAX;
 static bool lwm_triggered;
 
-#if 0
-static struct task_struct *maio_tx_thread[MAX_DEV_NUM];
-#endif
+static int maio_post_tx_task(void *state);
+static int (*threadfn)(void *data) = maio_post_tx_task;
 
 static inline bool maio_hwm_crossed(void)
 {
@@ -627,7 +627,7 @@ send_the_page:
 
 	/* LWM crossed ask user to return some mem via TX */
 	if (unlikely(maio_lwm_crossed() && !refill)) {
-		trace_printk("LWM crossed [%d], sending request\n", mag_get_full_count(&global_maio.mag[0]));
+		trace_debug("LWM crossed [%d], sending request\n", mag_get_full_count(&global_maio.mag[0]));
 		refill = (void *)MAIO_POISON;
 
 		/*
@@ -643,7 +643,7 @@ send_the_page:
 	/* HWM crossed return some mem to user */
 	if (unlikely(maio_hwm_crossed() && !refill)) {
 		void *buff;
-		trace_printk("HWM crossed [%d], sending page to user\n", mag_get_full_count(&global_maio.mag[0]));
+		trace_debug("HWM crossed [%d], sending page to user\n", mag_get_full_count(&global_maio.mag[0]));
 		//if hwm was crossed
 		refill = maio_alloc_page();
 		/* For the assert */
@@ -782,34 +782,28 @@ unlock:
 #define tx_ring_entry(qp) 	(qp)->tx_ring[(qp)->tx_counter & ((qp)->tx_sz -1)]
 #define advance_tx_ring(qp)	(qp)->tx_ring[(qp)->tx_counter++ & ((qp)->tx_sz -1)] = 0
 
-static unsigned tx_counter[MAX_DEV_NUM];
-
 #define TX_BATCH_SIZE	32
-int maio_post_tx_page(void *idx)
+int maio_post_tx_page(void *state)
 {
-	u64 dev_idx = (u64)idx;
-	u64 netdev_idx = dev_idx;
-	struct io_md *md;
+	struct maio_tx_thread *tx_thread = state;
 	struct sk_buff *skb_batch[TX_BATCH_SIZE];
-	struct percpu_maio_dev_qp *dev_qp = this_cpu_ptr(&maio_dev_qp);
-	struct percpu_maio_qp *qp = &dev_qp->qp[dev_idx];
+	struct io_md *md;
 	u64 uaddr = 0;
 	int copy = 0, cnt = 0;
 	bool local_lwm = lwm_triggered;
+	u64 netdev_idx = tx_thread->dev_idx;
 
 	assert(netdev_idx != -1);
 
-	/* NOTICE: This works only for a single TX - no concurency!!! AND a single TX Ring */
-	(qp)->tx_counter = tx_counter[dev_idx];
-	//trace_debug("[%d]Starting <%d>\n",smp_processor_id(), tx_counter & ((qp)->tx_sz -1));
+	trace_debug("[%d]Starting <%d>\n",smp_processor_id(), tx_thread->tx_counter & ((qp)->tx_sz -1));
 
-	while ((uaddr = tx_ring_entry(qp))) {
+	while ((uaddr = tx_ring_entry(tx_thread))) {
 		struct sk_buff *skb;
 		unsigned len, size;
 		void 		*kaddr	= uaddr2addr(uaddr);
 		struct page     *page	= virt_to_page(kaddr);
 
-		advance_tx_ring(qp);
+		advance_tx_ring(tx_thread);
 
 		if (unlikely(IS_ERR_OR_NULL(kaddr))) {
 			trace_debug("Invalid kaddr %llx from user %llx\n", (u64)kaddr, (u64)uaddr);
@@ -818,9 +812,11 @@ int maio_post_tx_page(void *idx)
 		}
 
 		if (unlikely( ! page_ref_count(page))) {
-			assert(!get_page_state(page));
-			trace_debug("TX] Zero fefcount page %llx[%d] addr %llx -- reseting \n",
-					(u64)page, page_ref_count(page), (u64)kaddr);
+			if (unlikely(get_page_state(page))) {
+				pr_err("TX] Zero fefcount page %llx(state %llx)[%d] addr %llx -- reseting \n",
+					(u64)page, get_page_state(page), page_ref_count(page), (u64)kaddr);
+				panic("Illegal page state\n");
+			}
 			init_page_count(page);
 		}
 
@@ -882,7 +878,7 @@ int maio_post_tx_page(void *idx)
 
 		/* A refill page from user following an lwm crosss */
 		if (unlikely(!md->len)) {
-			trace_printk(" Received page from user [%d](%d)\n", mag_get_full_count(&global_maio.mag[0]), page_ref_count(page));
+			trace_debug(" Received page from user [%d](%d)\n", mag_get_full_count(&global_maio.mag[0]), page_ref_count(page));
 			put_page(page);
 			local_lwm = false;
 
@@ -902,7 +898,7 @@ int maio_post_tx_page(void *idx)
 		}
 		skb = build_skb(kaddr, size);//TODO:
 		skb_put(skb, md->len);
-		skb->dev = maio_devs[netdev_idx];
+		skb->dev = tx_thread->netdev;
 		//get_page(virt_to_page(kaddr));
 		skb_batch[cnt++] = skb;
 
@@ -910,11 +906,10 @@ int maio_post_tx_page(void *idx)
 			break;
 	}
 
-	trace_debug("%d: Sending %d buffers. counter %d\n", smp_processor_id(), cnt, tx_counter[dev_idx]);
+	trace_debug("%d: Sending %d buffers. counter %d\n", smp_processor_id(), cnt, tx_thread->tx_counter);
 	if (cnt)
-		copy = maio_xmit(maio_devs[netdev_idx], skb_batch, cnt);
+		copy = maio_xmit(tx_thread->netdev, skb_batch, cnt);
 
-	tx_counter[dev_idx] = qp->tx_counter;
 	trace_debug("%d: Sending %d buffers. rc %d\n", smp_processor_id(), cnt, copy);
 
 	lwm_triggered = local_lwm;
@@ -929,8 +924,10 @@ static inline ssize_t maio_tx(struct file *file, const char __user *buf,
                                     size_t size, loff_t *_pos)
 {
 	char	kbuff[MAIO_TX_KBUFF_SZ], *cur;
-	size_t 	idx;
-	//static size_t prev = -1;
+	struct maio_tx_thread *tx_thread;
+	struct task_struct *thread;
+	size_t 	dev_idx, ring_id;
+	unsigned long  val;
 
 	if (unlikely(!maio_configured))
 		return -ENODEV;
@@ -943,38 +940,31 @@ static inline ssize_t maio_tx(struct file *file, const char __user *buf,
 		return -EFAULT;
 	}
 
-	idx = simple_strtoull(kbuff, &cur, 10);
+	dev_idx = simple_strtoull(kbuff, &cur, 10);
+	ring_id = simple_strtoull(cur + 1, &cur, 10);
 
-	if (unlikely(!global_maio_matrix[idx])) {
+	if (unlikely(!global_maio_matrix[dev_idx])) {
 		pr_err("global matrix not configured!!!");
 		return -ENODEV;
 	}
-#if 0
-	/* Make sure the I/O was posted on the correct Ring */
-	if (unlikely(val =! smp_processor_id())) {
-		trace_printk("%s: WARNING Sender Usess wrong Core ID: [%ld] Core %d\n", __FUNCTION__, val, smp_processor_id());
-	}
-	if (unlikely(prev == smp_processor_id())) {
-		trace_printk("%s: WARNING Sender switched Cores: [%ld] Core %d\n", __FUNCTION__, prev, smp_processor_id());
-		prev = smp_processor_id();
-	}
-#endif
 
-#if 0
-	if (maio_tx_thread->state & TASK_NORMAL) {
-		val = wake_up_process(maio_tx_thread);
-		trace_debug("[%d]wake up thread[state %0lx][%s]\n", smp_processor_id(), maio_tx_thread->state, val ? "WAKING":"UP");
+	tx_thread = &maio_tx_threads[dev_idx].tx_thread[ring_id];
+	thread = tx_thread->thread;
+
+	if (thread->state & TASK_NORMAL) {
+		val = wake_up_process(thread);
+		trace_debug("[%d]wake up thread[state %0lx][%s]\n", smp_processor_id(), thread->state, val ? "WAKING":"UP");
 	}
-#endif
-	maio_post_tx_page((void *)idx);
+	//maio_post_tx_page((void *)idx);
 	return size;
 }
-static int maio_post_tx_task(void *unused)
+
+static int maio_post_tx_task(void *state)
 {
 
         while (!kthread_should_stop()) {
 		trace_debug("[%d]Running...\n", smp_processor_id());
-		while (maio_post_tx_page(unused)); // XMIT as long as there is work to be done.
+		while (maio_post_tx_page(state)); // XMIT as long as there is work to be done.
 
 		trace_debug("[%d]sleeping...\n", smp_processor_id());
                 set_current_state(TASK_UNINTERRUPTIBLE);
@@ -985,10 +975,6 @@ static int maio_post_tx_task(void *unused)
         }
         return 0;
 }
-
-#if 0
-static int (*threadfn)(void *data) = maio_post_tx_task;
-#endif
 
 static inline int create_threads(void)
 {
@@ -1110,6 +1096,7 @@ static inline ssize_t init_user_rings(struct file *file, const char __user *buf,
 	for_each_possible_cpu(i) {
 		struct percpu_maio_dev_qp *dev_qp = per_cpu_ptr(&maio_dev_qp, i);
 		struct percpu_maio_qp *qp = &dev_qp->qp[dev_idx];
+		struct maio_tx_thread *tx_thread = &maio_tx_threads[dev_idx].tx_thread[i];
 
 		pr_err("[%ld]Ring: RX:%llx  - %llx:: TX: %llx - %llx\n", i,
 				global_maio_matrix[dev_idx]->info.rx_rings[i],
@@ -1118,12 +1105,20 @@ static inline ssize_t init_user_rings(struct file *file, const char __user *buf,
 				(u64)uaddr2addr(global_maio_matrix[dev_idx]->info.tx_rings[i]));
 
 		qp->rx_counter = 0;
-		qp->tx_counter = 0;
+		tx_thread->tx_counter = qp->tx_counter = 0;
 		qp->rx_sz = global_maio_matrix[dev_idx]->info.nr_rx_sz;
-		qp->tx_sz = global_maio_matrix[dev_idx]->info.nr_tx_sz;
+		tx_thread->tx_sz = qp->tx_sz = global_maio_matrix[dev_idx]->info.nr_tx_sz;
 		qp->rx_ring = uaddr2addr(global_maio_matrix[dev_idx]->info.rx_rings[i]);
-		/* TODO: Singe TX ring  NOTICE: each Ring has a different counter... */
-		qp->tx_ring = uaddr2addr(global_maio_matrix[dev_idx]->info.tx_rings[0]);
+		tx_thread->tx_ring = qp->tx_ring = uaddr2addr(global_maio_matrix[dev_idx]->info.tx_rings[i]);
+
+		tx_thread->dev_idx = dev_idx;
+		tx_thread->ring_id = i;
+		tx_thread->netdev = maio_devs[dev_idx];
+		tx_thread->thread = kthread_create(threadfn, tx_thread, "maio_tx_%d_thread_%ld", dev_idx, i);
+		if (IS_ERR(tx_thread->thread)) {
+			pr_err("Failed to create maio_tx_%d_thread_%ld\n", dev_idx, i);
+			return -ENOMEM;
+		}
 	}
 
 	return size;
@@ -1387,7 +1382,7 @@ static int maio_map_show(struct seq_file *m, void *v)
         return 0;
 }
 
-#define MAIO_VERSION	"v0.4-refill"
+#define MAIO_VERSION	"v0.5-tx_threads"
 static int maio_version_show(struct seq_file *m, void *v)
 {
 	seq_printf(m, "%s\n", MAIO_VERSION);

@@ -49,6 +49,8 @@ static struct maio_magz global_maio;
 struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
 EXPORT_SYMBOL(global_maio_matrix);
 
+static unsigned last_dev_idx;
+
 static u16 maio_headroom = (0x800 -128);
 static u16 maio_stride = 0x1000;//4K
 
@@ -76,7 +78,7 @@ DEFINE_PER_CPU(struct percpu_maio_dev_qp, maio_dev_qp);
 static struct rb_root mtt_tree = RB_ROOT;
 static struct umem_region_mtt *cached_mtt;
 
-static unsigned long maio_mag_lwm  __read_mostly = 256;
+static unsigned long maio_mag_lwm  __read_mostly = 1024;
 static unsigned long maio_mag_hwm  __read_mostly = ULONG_MAX;
 static bool lwm_triggered;
 
@@ -641,7 +643,7 @@ send_the_page:
 	/* HWM crossed return some mem to user */
 	if (unlikely(maio_hwm_crossed() && !refill)) {
 		void *buff;
-		trace_printk("LWM crossed [%d], sending page to user\n", mag_get_full_count(&global_maio.mag[0]));
+		trace_printk("HWM crossed [%d], sending page to user\n", mag_get_full_count(&global_maio.mag[0]));
 		//if hwm was crossed
 		refill = maio_alloc_page();
 		/* For the assert */
@@ -880,10 +882,10 @@ int maio_post_tx_page(void *idx)
 
 		/* A refill page from user following an lwm crosss */
 		if (unlikely(!md->len)) {
+			trace_printk(" Received page from user [%d](%d)\n", mag_get_full_count(&global_maio.mag[0]), page_ref_count(page));
 			put_page(page);
 			local_lwm = false;
 
-			trace_printk(" Received page from user [%d]\n", mag_get_full_count(&global_maio.mag[0]));
 			continue;
 		}
 //TODO: Consider adding ERR flags to ring entry.
@@ -1075,6 +1077,8 @@ static inline ssize_t init_user_rings(struct file *file, const char __user *buf,
 
 	if (setup_dev_idx(dev_idx) < 0)
 		return -ENODEV;
+
+	last_dev_idx = dev_idx;
 
 	trace_printk("device %s [%d]added\n", maio_devs[dev_idx]->name, dev_idx);
 
@@ -1370,12 +1374,12 @@ static int maio_enable_show(struct seq_file *m, void *v)
 
 static int maio_map_show(struct seq_file *m, void *v)
 {
-
 	/* TODO: make usefull */
-	if (global_maio_matrix[0]) {
-		seq_printf(m, "%llx %ld (%d)\n",
-			get_maio_uaddr(virt_to_head_page(global_maio_matrix[0])),
-			hp_cache_size, mag_get_full_count(&global_maio.mag[0]));
+	if (global_maio_matrix[last_dev_idx]) {
+		seq_printf(m, "%llx %ld (%d [%lu-%lu])\n",
+			get_maio_uaddr(virt_to_head_page(global_maio_matrix[last_dev_idx])),
+			hp_cache_size, mag_get_full_count(&global_maio.mag[0]),
+			maio_mag_lwm, maio_mag_hwm);
 	} else {
 		seq_printf(m, "NOT CONFIGURED\n");
 	}

@@ -290,16 +290,14 @@ void mlx5e_page_release_dynamic(struct mlx5e_rq *rq,
 				bool recycle)
 {
 
-	if (maio_configured) {
+	if (is_maio_page(dma_info->page)) {
 		mlx5e_page_dma_unmap(rq, dma_info);
 		put_page(dma_info->page);
 		return;
 	}
 	if (likely(recycle)) {
-/*
 		if (mlx5e_rx_cache_put(rq, dma_info))
 			return;
-*/
 		mlx5e_page_dma_unmap(rq, dma_info);
 		page_pool_recycle_direct(rq->page_pool, dma_info->page);
 	} else {

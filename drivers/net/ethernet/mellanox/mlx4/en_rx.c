@@ -57,6 +57,7 @@ static int mlx4_alloc_page(struct mlx4_en_priv *priv,
 	struct page *page;
 	dma_addr_t dma;
 
+//	maio_alloc
 	page = alloc_page(gfp);
 	if (unlikely(!page))
 		return -ENOMEM;
@@ -709,6 +710,12 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 		 * make sure we read the CQE after we read the ownership bit
 		 */
 		dma_rmb();
+
+		/**
+			if (maio_cp_rx)
+				goto next;
+
+		*/
 
 		/* Drop packet on bad receive or bad checksum */
 		if (unlikely((cqe->owner_sr_opcode & MLX4_CQE_OPCODE_MASK) ==

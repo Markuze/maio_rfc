@@ -43,6 +43,8 @@
 #include <linux/vmalloc.h>
 #include <linux/irq.h>
 
+#include <linux/maio.h>
+
 #include <net/ip.h>
 #if IS_ENABLED(CONFIG_IPV6)
 #include <net/ip6_checksum.h>
@@ -57,13 +59,16 @@ static int mlx4_alloc_page(struct mlx4_en_priv *priv,
 	struct page *page;
 	dma_addr_t dma;
 
-//	maio_alloc
-	page = alloc_page(gfp);
+	if (likely(maio_configured)) {
+		page = maio_alloc_page();
+	} else {
+		page = alloc_page(gfp);
+	}
 	if (unlikely(!page))
 		return -ENOMEM;
 	dma = dma_map_page(priv->ddev, page, 0, PAGE_SIZE, priv->dma_dir);
 	if (unlikely(dma_mapping_error(priv->ddev, dma))) {
-		__free_page(page);
+		put_page(page);
 		return -ENOMEM;
 	}
 	frag->page = page;
@@ -98,7 +103,7 @@ static void mlx4_en_free_frag(const struct mlx4_en_priv *priv,
 	if (frag->page) {
 		dma_unmap_page(priv->ddev, frag->dma,
 			       PAGE_SIZE, priv->dma_dir);
-		__free_page(frag->page);
+		put_page(frag->page);
 	}
 	/* We need to clear all fields, otherwise a change of priv->log_rx_info
 	 * could lead to see garbage later in frag->page.
@@ -711,12 +716,6 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 		 */
 		dma_rmb();
 
-		/**
-			if (maio_cp_rx)
-				goto next;
-
-		*/
-
 		/* Drop packet on bad receive or bad checksum */
 		if (unlikely((cqe->owner_sr_opcode & MLX4_CQE_OPCODE_MASK) ==
 						MLX4_CQE_OPCODE_ERROR)) {
@@ -769,6 +768,10 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 		 */
 		length = be32_to_cpu(cqe->byte_cnt);
 		length -= ring->fcs_del;
+
+		if (maio_post_rx_page(dev, va, length))
+			goto next; /* page/packet was consumed by MAIO */
+
 
 		/* A bpf program gets first chance to drop the packet. It may
 		 * read bytes but not past the end of the frag.
@@ -997,6 +1000,7 @@ void mlx4_en_calc_rx_buf(struct net_device *dev)
 {
 	struct mlx4_en_priv *priv = netdev_priv(dev);
 	int eff_mtu = MLX4_EN_EFF_MTU(dev->mtu);
+	int frag_size_max = PAGE_SIZE, buf_size = 0;
 	int i = 0;
 
 	/* bpf requires buffers to be set up as 1 packet per page.
@@ -1011,9 +1015,16 @@ void mlx4_en_calc_rx_buf(struct net_device *dev)
 		priv->dma_dir = PCI_DMA_BIDIRECTIONAL;
 		priv->rx_headroom = XDP_PACKET_HEADROOM;
 		i = 1;
+	} else if (frag_size_max == PAGE_SIZE) {
+		priv->frag_info[0].frag_size = eff_mtu;
+		/* This will gain efficient xdp frame recycling at the
+		 * expense of more costly truesize accounting
+		 */
+		priv->frag_info[0].frag_stride	= PAGE_SIZE;
+		priv->dma_dir			= PCI_DMA_FROMDEVICE;
+		priv->rx_headroom		= maio_get_page_headroom(NULL);;
+		i = 1;
 	} else {
-		int frag_size_max = 2048, buf_size = 0;
-
 		/* should not happen, right ? */
 		if (eff_mtu > PAGE_SIZE + (MLX4_EN_MAX_RX_FRAGS - 1) * 2048)
 			frag_size_max = PAGE_SIZE;

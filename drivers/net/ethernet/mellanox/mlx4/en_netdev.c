@@ -2001,6 +2001,24 @@ void mlx4_en_stop_port(struct net_device *dev, int detach)
 	}
 }
 
+static void mlx4_en_reset(struct net_device *dev)
+{
+	struct mlx4_en_priv *priv = netdev_priv(dev);
+	struct mlx4_en_dev *mdev = priv->mdev;
+
+	en_dbg(DRV, priv, "%s called for port %d\n", __FUNCTION__, priv->port);
+
+	rtnl_lock();
+	mutex_lock(&mdev->state_lock);
+	if (priv->port_up) {
+		mlx4_en_stop_port(dev, 1);
+		if (mlx4_en_start_port(dev))
+			en_err(priv, "Failed restarting port %d\n", priv->port);
+	}
+	mutex_unlock(&mdev->state_lock);
+	rtnl_unlock();
+}
+
 static void mlx4_en_restart(struct work_struct *work)
 {
 	struct mlx4_en_priv *priv = container_of(work, struct mlx4_en_priv,
@@ -2970,6 +2988,8 @@ static const struct net_device_ops mlx4_netdev_ops_master = {
 	.ndo_features_check	= mlx4_en_features_check,
 	.ndo_set_tx_maxrate	= mlx4_en_set_tx_maxrate,
 	.ndo_bpf		= mlx4_xdp,
+
+	.ndo_dev_reset		= mlx4_en_reset,
 };
 
 struct mlx4_en_bond {

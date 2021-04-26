@@ -35,7 +35,6 @@
 #include <linux/ipv6.h>
 #include <linux/tcp.h>
 #include <linux/indirect_call_wrapper.h>
-#include <linux/maio.h>
 #include <net/ip6_checksum.h>
 #include <net/page_pool.h>
 #include <net/inet_ecn.h>
@@ -50,6 +49,8 @@
 #include "en/xdp.h"
 #include "en/xsk/rx.h"
 #include "en/health.h"
+
+#include <linux/maio.h>
 
 static inline bool mlx5e_rx_hw_stamp(struct hwtstamp_config *config)
 {

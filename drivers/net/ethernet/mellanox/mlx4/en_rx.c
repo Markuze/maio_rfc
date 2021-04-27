@@ -58,12 +58,15 @@ static int mlx4_alloc_page(struct mlx4_en_priv *priv,
 {
 	struct page *page;
 	dma_addr_t dma;
-
+#if 0
 	if (likely(maio_configured)) {
 		page = maio_alloc_page();
 	} else {
 		page = alloc_page(gfp);
 	}
+#else
+		page = alloc_page(gfp);
+#endif
 	if (unlikely(!page))
 		return -ENOMEM;
 	dma = dma_map_page(priv->ddev, page, 0, PAGE_SIZE, priv->dma_dir);
@@ -136,6 +139,39 @@ static void mlx4_en_init_rx_desc(const struct mlx4_en_priv *priv,
 	}
 }
 
+/************************* DEBUG ********************************/
+static inline u64* page2track(struct page *page)
+{
+        u64 *track = page_address(&page[1]);
+        --track;
+        return track;
+/*
+        struct io_track *track;
+        int idx;
+
+        if (likely(get_maio_uaddr(page) & IS_MAIO_MASK))
+                track = page_address((__compound_head(page, 0)));
+        else
+
+        idx     = (((u64)page_address(page)) & HUGE_OFFSET) >> PAGE_SHIFT;//0-512
+
+        assert(idx <= 512);
+        return &track->map[idx];
+*/
+}
+
+static inline void set_page_state(struct page *page, u64 new_state)
+{
+        u64 *state = page2track(page);
+        *state = new_state;
+}
+
+static inline u64 get_page_state(struct page *page)
+{
+        u64 *state = page2track(page);
+        return *state;
+}
+/*******************************************************************************/
 static int mlx4_en_prepare_rx_desc(struct mlx4_en_priv *priv,
 				   struct mlx4_en_rx_ring *ring, int index,
 				   gfp_t gfp)
@@ -144,16 +180,23 @@ static int mlx4_en_prepare_rx_desc(struct mlx4_en_priv *priv,
 		(index << ring->log_stride);
 	struct mlx4_en_rx_alloc *frags = ring->rx_info +
 					(index << priv->log_rx_info);
-	if (likely(ring->page_cache.index > 0)) {
+	if ((ring->page_cache.index > 0)) {
 		/* XDP uses a single page per frame */
 		if (!frags->page) {
 			ring->page_cache.index--;
 			frags->page = ring->page_cache.buf[ring->page_cache.index].page;
 			frags->dma  = ring->page_cache.buf[ring->page_cache.index].dma;
 		}
-		frags->page_offset = XDP_PACKET_HEADROOM;
+		if (unlikely(is_maio_page(frags->page))) {
+			struct page *page = frags->page;
+			trace_printk("[%s]ERROR: Page %llx state %llx uaddr %llx\n", __FUNCTION__, (u64)page, get_page_state(page), get_maio_uaddr(page));
+			set_page_state(frags->page, MAIO_PAGE_RX);
+			frags->page_offset = maio_get_page_headroom(NULL);
+		} else {
+			frags->page_offset = XDP_PACKET_HEADROOM;
+		}
 		rx_desc->data[0].addr = cpu_to_be64(frags->dma +
-						    XDP_PACKET_HEADROOM);
+						    frags->page_offset);
 		return 0;
 	}
 
@@ -429,6 +472,9 @@ bool mlx4_en_rx_recycle(struct mlx4_en_rx_ring *ring,
 	if (cache->index >= MLX4_EN_CACHE_SIZE)
 		return false;
 
+	if (unlikely(is_maio_page(frame->page)))
+		return false;
+
 	cache->buf[cache->index].page = frame->page;
 	cache->buf[cache->index].dma = frame->dma;
 	cache->index++;
@@ -519,6 +565,7 @@ static int mlx4_en_complete_rx_desc(struct mlx4_en_priv *priv,
 		if (likely(release || is_maio_page(frags->page))) {
 			dma_unmap_page(priv->ddev, dma, PAGE_SIZE, priv->dma_dir);
 			frags->page = NULL;
+			frags->page_offset = maio_get_page_headroom(NULL);
 		} else {
 			page_ref_inc(page);
 		}
@@ -772,7 +819,7 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 		length = be32_to_cpu(cqe->byte_cnt);
 		length -= ring->fcs_del;
 
-		if (maio_post_rx_page(dev, va, length))
+		if (maio_post_rx_page_copy(dev, va, length))
 			goto next; /* page/packet was consumed by MAIO */
 
 
@@ -1025,7 +1072,7 @@ void mlx4_en_calc_rx_buf(struct net_device *dev)
 		 */
 		priv->frag_info[0].frag_stride	= PAGE_SIZE;
 		priv->dma_dir			= PCI_DMA_FROMDEVICE;
-		priv->rx_headroom		= maio_get_page_headroom(NULL);;
+		priv->rx_headroom		= maio_get_page_headroom(NULL);
 		i = 1;
 	} else {
 		/* should not happen, right ? */

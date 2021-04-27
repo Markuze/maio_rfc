@@ -147,8 +147,8 @@ static inline void flush_all_mtts(void)
 		pr_err("%s:freeing MTT [0x%llx - 0x%llx) len %d\n", __FUNCTION__, mtt->start, mtt->end, mtt->len);
 		for (; i < mtt->len; i++) {
 			set_maio_uaddr(mtt->pages[i], 0);
-			trace_printk("%llx rc: %d\n", (unsigned long long)mtt->pages[i],
-							page_ref_count(mtt->pages[i]));
+			//trace_printk("%llx rc: %d\n", (unsigned long long)mtt->pages[i],
+			//				page_ref_count(mtt->pages[i]));
 		}
 
 		put_user_pages(mtt->pages, mtt->len);
@@ -537,6 +537,7 @@ static inline int setup_dev_idx(unsigned dev_idx)
 
 	netdev_for_each_lower_dev(dev, iter_dev, iter) {
 		trace_printk("[%s:%d]lower: device %s [%d]added\n", iter_dev->name, iter_dev->ifindex, iter_dev->name, iter_dev->ifindex);
+		pr_err("[%s:%d]lower: device %s [%d]added\n", iter_dev->name, iter_dev->ifindex, iter_dev->name, iter_dev->ifindex);
 
 		if (dev_map.on_tx[dev_idx] != dev_idx) {
 			//In case of multiple slave devs; on TX use the master dev.
@@ -562,6 +563,13 @@ static inline bool test_maio_filter(void *addr)
        /* network byte order of loader machine */
        int trgt = (10|5<<8|3<<16|4<<24);
 
+
+       if (trgt == iphdr->saddr) {
+               trace_debug("SIP: %pI4 N[%x] DIP: %pI4 N[%x]\n", &iphdr->saddr, iphdr->saddr, &iphdr->daddr, iphdr->daddr);
+               return 0;
+       }
+
+       trgt = (10|5<<8|3<<16|9<<24);
 
        if (trgt == iphdr->saddr) {
                trace_debug("SIP: %pI4 N[%x] DIP: %pI4 N[%x]\n", &iphdr->saddr, iphdr->saddr, &iphdr->daddr, iphdr->daddr);

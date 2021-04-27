@@ -2,6 +2,7 @@
 /* Copyright (c) 2019 Mellanox Technologies. */
 
 #include "en/params.h"
+
 #include <linux/maio.h>
 
 static inline bool mlx5e_rx_is_xdp(struct mlx5e_params *params,

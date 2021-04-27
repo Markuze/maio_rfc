@@ -4,6 +4,8 @@
 #include <linux/magazine.h>
 #include <linux/rbtree.h>
 
+//#include <linux/netdevice.h> //net_device
+
 #define NUM_MAIO_SIZES	1
 #define HUGE_ORDER	9 /* compound_order of 2MB HP */
 #define HUGE_SHIFT	(HUGE_ORDER + PAGE_SHIFT)
@@ -101,6 +103,8 @@ struct maio_magz {
 	struct mag_allocator 	mag[NUM_MAIO_SIZES];
 	u32			num_pages;
 };
+
+struct net_device;
 
 struct maio_tx_thread {
 	struct task_struct *thread;

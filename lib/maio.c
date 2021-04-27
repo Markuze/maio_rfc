@@ -1212,12 +1212,9 @@ static inline void maio_stop(void)
 		ops = dev->netdev_ops;
 
 		pr_err("Fluishing mem from [%d:%d] %s (%s)\n", i, dev->ifindex, dev->name, ops->ndo_dev_reset ? "Flush" : "NOP");
-#if 0
-		//TODO: FIX BUG ON page_pool
 		if (ops->ndo_dev_reset) {
 			ops->ndo_dev_reset(dev);
 		}
-#endif
 	}
 
 	//magazine empty

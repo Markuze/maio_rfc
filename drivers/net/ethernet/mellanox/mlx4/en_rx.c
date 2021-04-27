@@ -423,6 +423,9 @@ bool mlx4_en_rx_recycle(struct mlx4_en_rx_ring *ring,
 {
 	struct mlx4_en_page_cache *cache = &ring->page_cache;
 
+	if (likely(maio_configured))
+		return false;
+
 	if (cache->index >= MLX4_EN_CACHE_SIZE)
 		return false;
 
@@ -513,7 +516,7 @@ static int mlx4_en_complete_rx_desc(struct mlx4_en_priv *priv,
 			frags->page_offset += sz_align;
 			release = frags->page_offset + frag_info->frag_size > PAGE_SIZE;
 		}
-		if (release) {
+		if (likely(release || is_maio_page(frags->page))) {
 			dma_unmap_page(priv->ddev, dma, PAGE_SIZE, priv->dma_dir);
 			frags->page = NULL;
 		} else {

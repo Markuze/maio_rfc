@@ -19,6 +19,9 @@
 #define NUM_MAX_RINGS	16
 #define MAX_DEV_NUM 	16
 
+#define NAPI_THREAD_IDX	(NUM_MAX_RINGS -1) /* Currently the last tx ring is napi */
+#define NAPI_BATCH_SIZE	128
+
 #if 0
 //TODO: Take these at init and change to __read_mostly var
 #define UMAIO_STRIDE		0x1000
@@ -38,9 +41,9 @@ extern struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
 
 /******** MAIO PAGE PRIVATE FLAGS ****************/
 #define MAIO_PAGE_HEAD 0xF000
-#define MAIO_PAGE_MBUF 0xF00
-#define MAIO_PAGE_FREE 0x800   // storred in the magz
-#define MAIO_PAGE_IO   0x600   // TX|RX
+#define MAIO_PAGE_FREE 0xF00
+#define MAIO_PAGE_IO   (MAIO_PAGE_TX|MAIO_PAGE_RX|MAIO_PAGE_TX)   // TX|RX|NAPI
+#define MAIO_PAGE_NAPI 0x800   // storred in the magz
 #define MAIO_PAGE_TX   0x400   // sent by user
 #define MAIO_PAGE_RX   0x200   // alloced from magz - usualy RX
 #define MAIO_PAGE_USER 0x100   // page in user space control
@@ -115,10 +118,6 @@ struct maio_tx_thread {
 	u32 dev_idx;
 	u32 ring_id;
 } ____cacheline_aligned_in_smp;
-
-struct maio_tx_threads {
-	struct maio_tx_thread tx_thread[NUM_MAX_RINGS];
-};
 
 struct percpu_maio_qp {
 	unsigned long rx_counter;

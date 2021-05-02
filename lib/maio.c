@@ -30,6 +30,11 @@
 #define trace_debug(...)
 #endif
 
+struct maio_tx_threads {
+	struct maio_tx_thread tx_thread[NUM_MAX_RINGS];
+	struct napi_struct napi;
+};
+
 /* GLOBAL MAIO FLAG*/
 volatile bool maio_configured;
 EXPORT_SYMBOL(maio_configured);
@@ -45,7 +50,6 @@ static struct page* mtrx_pages[1<<HUGE_ORDER];
 static struct proc_dir_entry *maio_dir;
 static struct maio_magz global_maio;
 
-/* User matrix : No longer static as the threads should be in a module */
 struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
 EXPORT_SYMBOL(global_maio_matrix);
 
@@ -67,6 +71,7 @@ static LIST_HEAD(head_cache);
 DEFINE_SPINLOCK(head_cache_lock);
 static unsigned long head_cache_size;
 
+/*TODO: Clean up is currently leaking this */
 static struct maio_tx_threads	maio_tx_threads[MAX_DEV_NUM];
 static struct net_device *maio_devs[MAX_DEV_NUM] __read_mostly;
 static struct maio_dev_map dev_map;
@@ -927,7 +932,6 @@ int maio_post_tx_page(void *state)
 }
 
 #define MAIO_TX_KBUFF_SZ	64
-
 static inline ssize_t maio_tx(struct file *file, const char __user *buf,
                                     size_t size, loff_t *_pos)
 {
@@ -939,7 +943,6 @@ static inline ssize_t maio_tx(struct file *file, const char __user *buf,
 
 	if (unlikely(!maio_configured))
 		return -ENODEV;
-
 
 	if (unlikely(size < 1 || size >= MAIO_TX_KBUFF_SZ))
 	        return -EINVAL;
@@ -960,10 +963,47 @@ static inline ssize_t maio_tx(struct file *file, const char __user *buf,
 	thread = tx_thread->thread;
 
 	if (thread->state & TASK_NORMAL) {
-		val = wake_up_process(thread);
-		trace_debug("[%d]wake up thread[state %0lx][%s]\n", smp_processor_id(), thread->state, val ? "WAKING":"UP");
+	        val = wake_up_process(thread);
+	        trace_debug("[%d]wake up thread[state %0lx][%s]\n", smp_processor_id(), thread->state, val ? "WAKING":"UP");
 	}
 	//maio_post_tx_page((void *)idx);
+
+	return size;
+}
+
+static inline ssize_t maio_napi(struct file *file, const char __user *buf,
+                                    size_t size, loff_t *_pos)
+{
+	char	kbuff[MAIO_TX_KBUFF_SZ], *cur;
+	struct napi_struct *napi;
+	size_t 	dev_idx, ring_id;
+
+	if (unlikely(!maio_configured))
+		return -ENODEV;
+
+	if (unlikely(size < 1 || size >= MAIO_TX_KBUFF_SZ))
+	        return -EINVAL;
+
+	if (copy_from_user(kbuff, buf, size)) {
+		return -EFAULT;
+	}
+
+	dev_idx = simple_strtoull(kbuff, &cur, 10);
+	ring_id = simple_strtoull(cur + 1, &cur, 10);
+
+	if (unlikely(ring_id != NAPI_THREAD_IDX)) {
+		pr_err("wrong NAPI_THREAD_IDX %lu != %u\n", ring_id, NAPI_THREAD_IDX);
+		return -ENODEV;
+	}
+
+	if (unlikely(!global_maio_matrix[dev_idx])) {
+		pr_err("global matrix not configured!!!");
+		return -ENODEV;
+	}
+
+	napi = &maio_tx_threads[dev_idx].napi;
+	//TODO: consider napi_schedule_irqoff -- is this rentrant
+	napi_schedule(napi);
 	return size;
 }
 
@@ -1037,6 +1077,144 @@ static unsigned int atou(const char *s)
 	while (isdigit(*s))
 		i = i * 10 + (*s++ - '0');
 	return i;
+}
+
+static int maio_post_napi_page(struct maio_tx_thread *tx_thread, struct napi_struct *napi)
+{
+	struct io_md *md;
+	u64 uaddr = 0;
+	int cnt = 0;
+	bool local_lwm = lwm_triggered;
+	u64 netdev_idx = tx_thread->dev_idx;
+
+	assert(netdev_idx != -1);
+
+	trace_debug("[%d]Starting <%d>\n",smp_processor_id(), tx_thread->tx_counter & ((qp)->tx_sz -1));
+
+	while ((uaddr = tx_ring_entry(tx_thread))) {
+		struct sk_buff *skb;
+		unsigned len, size;
+		void 		*kaddr	= uaddr2addr(uaddr);
+		struct page     *page	= virt_to_page(kaddr);
+
+		advance_tx_ring(tx_thread);
+
+		if (unlikely(IS_ERR_OR_NULL(kaddr))) {
+			trace_debug("Invalid kaddr %llx from user %llx\n", (u64)kaddr, (u64)uaddr);
+			pr_err("Invalid kaddr %llx from user %llx\n", (u64)kaddr, (u64)uaddr);
+			continue;
+		}
+
+		if (unlikely( ! page_ref_count(page))) {
+			if (unlikely(get_page_state(page))) {
+				pr_err("TX] Zero fefcount page %llx(state %llx)[%d] addr %llx -- reseting \n",
+					(u64)page, get_page_state(page), page_ref_count(page), (u64)kaddr);
+				panic("Illegal page state\n");
+			}
+			init_page_count(page);
+		}
+
+		if (unlikely(!is_maio_page(page))) {
+
+			if (PageHead(page)) {
+				struct io_md *buff;
+
+				set_maio_is_io(page);
+				set_page_state(page, MAIO_POISON); // Need to add on NEW USER pages.
+
+				page = maio_alloc_page();
+				if (!page)
+					return 0;
+				/* For the assert */
+				set_page_state(page, MAIO_PAGE_USER);
+				buff = page_address(page);
+
+				buff = (void *)((u64)buff + maio_get_page_headroom(NULL));
+
+				md = kaddr;
+				md--;
+
+				len = md->len;
+				len += sizeof(*md);
+
+				trace_debug("TX] :COPY %u [%u] to page %llx[%d] addr %llx\n", len,
+						maio_get_page_headroom(NULL),
+						(u64)page, page_ref_count(page), (u64)kaddr);
+				assert(len <= (PAGE_SIZE - maio_get_page_headroom(NULL)));
+
+				memcpy(buff, md, len);
+				kaddr = &buff[1];
+			} else {
+				panic("This shit cant happen!\n"); //uaddr2addr would fail first
+			}
+		}
+
+		if (unlikely(get_page_state(page) > MAIO_PAGE_USER)) {
+			pr_err("ERROR: Page %llx state %llx uaddr %llx\n", (u64)page, get_page_state(page), get_maio_uaddr(page));
+			pr_err("%d:%s:%llx :%s\n", smp_processor_id(), __FUNCTION__, (u64)page, PageHead(page)?"HEAD":"");
+		}
+
+		set_page_state(page, MAIO_PAGE_NAPI);
+		md = kaddr;
+		md--;
+
+		if (unlikely(md->poison != MAIO_POISON)) {
+			pr_err("NO MAIO-POISON <%x>Found [%llx] -- Please make sure to put the buffer\n"
+				"page %llx: %s:%s %llx ",
+				md->poison, uaddr, (u64)page,
+				is_maio_page(page)?"MAIO":"OTHER",
+				PageHead(page)?"HEAD":"Tail",
+				get_maio_uaddr(page));
+
+			panic("This should not happen\n");
+			continue;
+		}
+
+		/* A refill page from user following an lwm crosss */
+		if (unlikely(!md->len)) {
+			trace_debug(" Received page from user [%d](%d)\n", mag_get_full_count(&global_maio.mag[0]), page_ref_count(page));
+			put_page(page);
+			local_lwm = false;
+
+			continue;
+		}
+
+		len 	= md->len + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+		size 	= maio_stride - ((u64)kaddr & (maio_stride -1));
+
+		trace_debug("TX %llx/%llx [%d]from user %llx [#%d]\n",
+				(u64)kaddr, (u64)page, page_ref_count(page),
+				(u64)uaddr, cnt);
+		if (unlikely(((uaddr & (PAGE_SIZE -1)) + len) > PAGE_SIZE)) {
+			pr_err("Buffer to Long [%llx] len %u klen = %u\n", uaddr, md->len, len);
+			continue;
+		}
+		skb = build_skb(kaddr, size);//TODO:
+		skb_put(skb, md->len);
+		skb->dev = tx_thread->netdev;
+		cnt++;
+		//OPTION: Use non napi API: netif_rx but lose GRO.
+		napi_gro_receive(napi, skb);
+
+		if (unlikely(cnt >= NAPI_BATCH_SIZE))
+			break;
+	}
+	lwm_triggered = local_lwm;
+
+	/*
+		No need to check rc, we have no IRQs to arm.
+		The user process is not running time slice is used here.
+	*/
+	napi_complete_done(napi, cnt);
+	return cnt;
+}
+
+
+int maio_napi_poll(struct napi_struct *napi, int budget)
+{
+	struct maio_tx_threads *threads = container_of(napi, struct maio_tx_threads, napi);
+
+	return maio_post_napi_page(&threads->tx_thread[NAPI_THREAD_IDX], napi);
 }
 
 /*
@@ -1125,9 +1303,12 @@ static inline ssize_t init_user_rings(struct file *file, const char __user *buf,
 		tx_thread->thread = kthread_create(threadfn, tx_thread, "maio_tx_%d_thread_%ld", dev_idx, i);
 		if (IS_ERR(tx_thread->thread)) {
 			pr_err("Failed to create maio_tx_%d_thread_%ld\n", dev_idx, i);
+			/* Clean teardown */
 			return -ENOMEM;
 		}
 	}
+
+        netif_napi_add(maio_devs[dev_idx], &maio_tx_threads[dev_idx].napi, maio_napi_poll, NAPI_BATCH_SIZE);
 
 	return size;
 }
@@ -1366,6 +1547,12 @@ static ssize_t maio_tx_write(struct file *file,
         return maio_tx(file, buffer, count, pos);
 }
 
+static ssize_t maio_napi_write(struct file *file,
+                const char __user *buffer, size_t count, loff_t *pos)
+{
+        return maio_napi(file, buffer, count, pos);
+}
+
 static int maio_enable_show(struct seq_file *m, void *v)
 {
 	seq_printf(m, "%d\n", maio_configured ? 1 : 0);
@@ -1387,7 +1574,7 @@ static int maio_map_show(struct seq_file *m, void *v)
         return 0;
 }
 
-#define MAIO_VERSION	"v0.5-tx_threads"
+#define MAIO_VERSION	"v0.6-napi"
 static int maio_version_show(struct seq_file *m, void *v)
 {
 	seq_printf(m, "%s\n", MAIO_VERSION);
@@ -1472,6 +1659,14 @@ static const struct file_operations maio_tx_ops = {
         .write     = maio_tx_write,
 };
 
+static const struct file_operations maio_napi_ops = {
+        .open      = maio_map_open,
+        .read      = seq_read,
+        .llseek    = seq_lseek,
+        .release   = single_release,
+        .write     = maio_napi_write,
+};
+
 static inline void proc_init(void)
 {
 	reset_global_maio_state();
@@ -1483,6 +1678,7 @@ static inline void proc_init(void)
 	proc_create_data("pages_0", 00666, maio_dir, &maio_page_0_ops, NULL);
 	proc_create_data("enable", 00666, maio_dir, &maio_enable_ops, NULL);
 	proc_create_data("tx", 00666, maio_dir, &maio_tx_ops, NULL);
+	proc_create_data("napi", 00666, maio_dir, &maio_napi_ops, NULL);
 	proc_create_data("version", 00444, maio_dir, &maio_version_fops, NULL );
 }
 

@@ -152,8 +152,8 @@ static inline void flush_all_mtts(void)
 		pr_err("%s:freeing MTT [0x%llx - 0x%llx) len %d\n", __FUNCTION__, mtt->start, mtt->end, mtt->len);
 		for (; i < mtt->len; i++) {
 			set_maio_uaddr(mtt->pages[i], 0);
-			//trace_printk("%llx rc: %d\n", (unsigned long long)mtt->pages[i],
-			//				page_ref_count(mtt->pages[i]));
+			trace_debug("%llx rc: %d\n", (unsigned long long)mtt->pages[i],
+							page_ref_count(mtt->pages[i]));
 		}
 
 		put_user_pages(mtt->pages, mtt->len);
@@ -1001,6 +1001,7 @@ static inline ssize_t maio_napi(struct file *file, const char __user *buf,
 		return -ENODEV;
 	}
 
+	trace_printk("scheduling NAPI for dev %lu\n", dev_idx);
 	napi = &maio_tx_threads[dev_idx].napi;
 	//TODO: consider napi_schedule_irqoff -- is this rentrant
 	napi_schedule(napi);
@@ -1096,7 +1097,7 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread, struct napi_str
 
 	assert(netdev_idx != -1);
 
-	trace_debug("[%d]Starting <%d>\n",smp_processor_id(), tx_thread->tx_counter & ((qp)->tx_sz -1));
+	trace_printk("[%d]Starting <%lu>\n",smp_processor_id(), tx_thread->tx_counter & ((tx_thread)->tx_sz -1));
 
 	while ((uaddr = tx_ring_entry(tx_thread))) {
 		struct sk_buff *skb;
@@ -1189,7 +1190,7 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread, struct napi_str
 		len 	= md->len + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 		size 	= maio_stride - ((u64)kaddr & (maio_stride -1));
 
-		trace_debug("TX %llx/%llx [%d]from user %llx [#%d]\n",
+		trace_printk("TX %llx/%llx [%d]from user %llx [#%d]\n",
 				(u64)kaddr, (u64)page, page_ref_count(page),
 				(u64)uaddr, cnt);
 		if (unlikely(((uaddr & (PAGE_SIZE -1)) + len) > PAGE_SIZE)) {
@@ -1213,6 +1214,7 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread, struct napi_str
 		The user process is not running time slice is used here.
 	*/
 	napi_complete_done(napi, cnt);
+	trace_printk("poll complete %d\n", cnt);
 	return cnt;
 }
 

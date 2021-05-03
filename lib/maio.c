@@ -1041,7 +1041,7 @@ static inline int create_threads(void)
 static inline ssize_t maio_enable(struct file *file, const char __user *buf,
                                     size_t size, loff_t *_pos)
 {	char	*kbuff, *cur;
-	size_t 	val;
+	size_t 	val, dev_idx;
 
 	if (size < 1 || size >= PAGE_SIZE)
 	        return -EINVAL;
@@ -1051,8 +1051,15 @@ static inline ssize_t maio_enable(struct file *file, const char __user *buf,
 	        return PTR_ERR(kbuff);
 
 	val 	= simple_strtoull(kbuff, &cur, 10);
-	pr_err("%s: Now: [%s] was %s\n", __FUNCTION__, val ? "Configured" : "Off", maio_configured ? "Configured" : "Off");
-	trace_printk("%s: Now: [%s] was %s\n", __FUNCTION__, val ? "Configured" : "Off", maio_configured ? "Configured" : "Off");
+	dev_idx = simple_strtoull(cur + 1, &cur, 10);
+
+	if (unlikely(!global_maio_matrix[dev_idx])) {
+		pr_err("global matrix not configured!!!");
+		return -ENODEV;
+	}
+
+	pr_err("%s: dev %lu:: Now: [%s] was %s\n", __FUNCTION__, dev_idx, val ? "Configured" : "Off", maio_configured ? "Configured" : "Off");
+	trace_printk("%s: dev %lu:: Now: [%s] was %s\n", __FUNCTION__, dev_idx, val ? "Configured" : "Off", maio_configured ? "Configured" : "Off");
 
 	kfree(kbuff);
 
@@ -1061,10 +1068,10 @@ static inline ssize_t maio_enable(struct file *file, const char __user *buf,
 	else
 		return -EINVAL;
 
-	if (create_threads()) {
-		pr_err("ERROR: Failed to create TX threads\n!!!");
-		return -ENOMEM;
-	}
+	if (val)
+		napi_enable(&maio_tx_threads[dev_idx].napi);
+	else
+		napi_disable(&maio_tx_threads[dev_idx].napi);
 
 	return size;
 }
@@ -1217,6 +1224,20 @@ int maio_napi_poll(struct napi_struct *napi, int budget)
 	return maio_post_napi_page(&threads->tx_thread[NAPI_THREAD_IDX], napi);
 }
 
+static inline void setup_maio_napi(unsigned long dev_idx)
+{
+	struct maio_tx_thread *tx_thread = &maio_tx_threads[dev_idx].tx_thread[NAPI_THREAD_IDX];
+
+	tx_thread->tx_counter 	= 0;
+	tx_thread->tx_sz	= global_maio_matrix[dev_idx]->info.nr_tx_sz;
+	tx_thread->tx_ring	= uaddr2addr(global_maio_matrix[dev_idx]->info.tx_rings[NAPI_THREAD_IDX]);
+	tx_thread->dev_idx	= dev_idx;
+	tx_thread->ring_id	= NAPI_THREAD_IDX;
+	tx_thread->netdev 	= maio_devs[dev_idx];
+
+        netif_napi_add(maio_devs[dev_idx], &maio_tx_threads[dev_idx].napi, maio_napi_poll, NAPI_BATCH_SIZE);
+}
+
 /*
 We accept a USER provided MTRX
 	*	Maybe provide a kernel matrix?
@@ -1308,8 +1329,7 @@ static inline ssize_t init_user_rings(struct file *file, const char __user *buf,
 		}
 	}
 
-        netif_napi_add(maio_devs[dev_idx], &maio_tx_threads[dev_idx].napi, maio_napi_poll, NAPI_BATCH_SIZE);
-
+	setup_maio_napi(dev_idx);
 	return size;
 }
 

@@ -55,7 +55,7 @@ EXPORT_SYMBOL(global_maio_matrix);
 
 static unsigned last_dev_idx;
 
-static u16 maio_headroom = (0x800 -128);
+static u16 maio_headroom = (0x800 -512);
 static u16 maio_stride = 0x1000;//4K
 
 /* HP Cache */
@@ -112,9 +112,9 @@ static inline bool maio_lwm_crossed(void)
 
 static inline u64* page2track(struct page *page)
 {
-	u64 *track = page_address(&page[1]);
-	--track;
-	return track;
+	u64 track = (u64)page_address(&page[1]);
+	track -= 512;
+	return (u64 *)track;
 /*
 	struct io_track *track;
 	int idx;
@@ -360,7 +360,7 @@ void maio_frag_free(void *addr)
 	assert(page_ref_count(page) == 0);
 	if (unlikely(! (get_page_state(page) & MAIO_PAGE_IO))) {
 		pr_err("ERROR: Page %llx state %llx uaddr %llx\n", (u64)page, get_page_state(page), get_maio_uaddr(page));
-		pr_err("%d:%s:%llx :%s\n", smp_processor_id(), __FUNCTION__, (u64)page, PageHead(page)?"HEAD":"");
+		pr_err("%d:%s:%llx :%s\n", smp_processor_id(), __FUNCTION__, (u64)page_address(page), PageHead(page)?"HEAD":"Tail");
 	}
 	assert(get_page_state(page) & MAIO_PAGE_IO);
 	set_page_state(page, MAIO_PAGE_FREE);
@@ -824,7 +824,9 @@ struct sk_buff *maio_build_linear_rx_skb(struct net_device *netdev, void *va, si
 	if (unlikely(!skb))
 		return NULL;
 
-	trace_debug(">>> va %llx offset %llu size %lu\n", (u64)va, (u64)(va - page_address), size);
+	trace_debug(">>> va %llx offset %llu size %lu shinfo %llx marker %llx [%lld]\n", (u64)va,
+			(u64)(va - page_address), size, (u64)skb_shinfo(skb), (u64)page2track(virt_to_page(va)),
+			(u64)skb_shinfo(skb) - (u64)page2track(virt_to_page(va)));
 	skb_reserve(skb, va - page_address);
 	skb_put(skb, size);
 

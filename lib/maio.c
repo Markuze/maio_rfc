@@ -1197,7 +1197,8 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread, struct napi_str
 			pr_err("Buffer to Long [%llx] len %u klen = %u\n", uaddr, md->len, len);
 			continue;
 		}
-		skb = build_skb(kaddr, size);//TODO:
+		skb = build_skb(kaddr - NET_SKB_PAD, size);
+		skb_reserve(skb, NET_SKB_PAD);
 		skb_put(skb, md->len);
 		skb->dev = tx_thread->netdev;
 		cnt++;

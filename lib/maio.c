@@ -32,7 +32,7 @@
 
 struct maio_tx_threads {
 	struct maio_tx_thread tx_thread[NUM_MAX_RINGS];
-	//struct napi_struct napi;
+	struct napi_struct napi;
 };
 
 /* GLOBAL MAIO FLAG*/
@@ -91,7 +91,7 @@ static bool lwm_triggered;
 static int maio_post_tx_task(void *state);
 static int (*threadfn)(void *data) = maio_post_tx_task;
 
-static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_struct *napi*/);
+static int maio_post_napi_page(struct maio_tx_thread *tx_thread, struct napi_struct *napi);
 
 static inline bool maio_hwm_crossed(void)
 {
@@ -676,7 +676,7 @@ send_the_page:
 		goto send_the_page;
 	}
 
-	trace_printk("kaddr %llx, len %d\n", (u64)addr, len);
+	trace_debug("kaddr %llx, len %d\n", (u64)addr, len);
 	if (!page) {
 		void *buff;
 
@@ -824,7 +824,7 @@ struct sk_buff *maio_build_linear_rx_skb(struct net_device *netdev, void *va, si
 	if (unlikely(!skb))
 		return NULL;
 
-	trace_printk(">>> va %llx offset %llu size %lu\n", (u64)va, (u64)(va - page_address), size);
+	trace_debug(">>> va %llx offset %llu size %lu\n", (u64)va, (u64)(va - page_address), size);
 	skb_reserve(skb, va - page_address);
 	skb_put(skb, size);
 
@@ -1018,7 +1018,7 @@ static inline ssize_t maio_tx(struct file *file, const char __user *buf,
 static inline ssize_t maio_napi(struct file *file, const char __user *buf,
                                     size_t size, loff_t *_pos)
 {
-	struct maio_tx_thread *tx_thread;
+	struct napi_struct *napi;
 	char	kbuff[MAIO_TX_KBUFF_SZ], *cur;
 	size_t 	dev_idx, ring_id;
 
@@ -1045,11 +1045,12 @@ static inline ssize_t maio_napi(struct file *file, const char __user *buf,
 		return -ENODEV;
 	}
 
-	trace_printk("scheduling NAPI for dev %lu\n", dev_idx);
-	tx_thread = &maio_tx_threads[dev_idx].tx_thread[ring_id];
-	maio_post_napi_page(tx_thread/*, napi*/);
+	trace_debug("scheduling NAPI for dev %lu\n", dev_idx);
+	napi = &maio_tx_threads[dev_idx].napi;
+	//tx_thread = &maio_tx_threads[dev_idx].tx_thread[ring_id];
+	//maio_post_napi_page(tx_thread/*, napi*/);
 	//TODO: consider napi_schedule_irqoff -- is this rentrant
-	//napi_schedule(napi);
+	napi_schedule(napi);
 	return size;
 }
 
@@ -1113,12 +1114,11 @@ static inline ssize_t maio_enable(struct file *file, const char __user *buf,
 		maio_configured = val;
 	else
 		return -EINVAL;
-#if 0
 	if (val)
 		napi_enable(&maio_tx_threads[dev_idx].napi);
 	else
 		napi_disable(&maio_tx_threads[dev_idx].napi);
-#endif
+
 	return size;
 }
 
@@ -1132,7 +1132,7 @@ static unsigned int atou(const char *s)
 	return i;
 }
 
-static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_struct *napi*/)
+static int maio_post_napi_page(struct maio_tx_thread *tx_thread, struct napi_struct *napi)
 {
 	struct io_md *md;
 	u64 uaddr = 0;
@@ -1142,7 +1142,7 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 
 	assert(netdev_idx != -1);
 
-	trace_printk("[%d]Starting <%lu>\n",smp_processor_id(), tx_thread->tx_counter & ((tx_thread)->tx_sz -1));
+	trace_debug("[%d]Starting <%lu>\n",smp_processor_id(), tx_thread->tx_counter & ((tx_thread)->tx_sz -1));
 
 	while ((uaddr = tx_ring_entry(tx_thread))) {
 		struct sk_buff *skb;
@@ -1235,7 +1235,7 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 		len 	= md->len;// + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 		//size 	= maio_stride - ((u64)kaddr & (maio_stride -1));
 
-		trace_printk("TX %llx/%llx [%d]from user %llx [#%d] len %d\n",
+		trace_debug("TX %llx/%llx [%d]from user %llx [#%d] len %d\n",
 				(u64)kaddr, (u64)page, page_ref_count(page),
 				(u64)uaddr, cnt, len);
 		if (unlikely(((uaddr & (PAGE_SIZE -1)) + len) > PAGE_SIZE)) {
@@ -1250,8 +1250,8 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 		}
 		cnt++;
 		//OPTION: Use non napi API: netif_rx but lose GRO.
-		netif_rx(skb);
-		//napi_gro_receive(napi, skb);
+		//netif_rx(skb);
+		napi_gro_receive(napi, skb);
 
 		if (unlikely(cnt >= NAPI_BATCH_SIZE))
 			break;
@@ -1262,21 +1262,17 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 		No need to check rc, we have no IRQs to arm.
 		The user process is not running time slice is used here.
 	*/
-	//napi_complete_done(napi, cnt);
-	trace_printk("poll complete %d\n", cnt);
+	napi_complete_done(napi, cnt);
+	trace_debug("poll complete %d\n", cnt);
 	return cnt;
 }
 
 
 int maio_napi_poll(struct napi_struct *napi, int budget)
 {
-#if 0
 	struct maio_tx_threads *threads = container_of(napi, struct maio_tx_threads, napi);
 
-	return maio_post_napi_page(&threads->tx_thread[NAPI_THREAD_IDX]/*, napi*/);
-#else
-	return 0;
-#endif
+	return maio_post_napi_page(&threads->tx_thread[NAPI_THREAD_IDX], napi);
 }
 
 static inline void setup_maio_napi(unsigned long dev_idx)
@@ -1290,7 +1286,7 @@ static inline void setup_maio_napi(unsigned long dev_idx)
 	tx_thread->ring_id	= NAPI_THREAD_IDX;
 	tx_thread->netdev 	= maio_devs[dev_idx];
 
-        //netif_napi_add(maio_devs[dev_idx], &maio_tx_threads[dev_idx].napi, maio_napi_poll, NAPI_BATCH_SIZE);
+	netif_napi_add(maio_devs[dev_idx], &maio_tx_threads[dev_idx].napi, maio_napi_poll, NAPI_BATCH_SIZE);
 }
 
 /*

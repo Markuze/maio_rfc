@@ -676,7 +676,7 @@ send_the_page:
 		goto send_the_page;
 	}
 
-	trace_printk("kaddr %llx, len %d\n", (u64)addr, len);
+	trace_debug("kaddr %llx, len %d\n", (u64)addr, len);
 	if (!page) {
 		void *buff;
 
@@ -824,7 +824,7 @@ struct sk_buff *maio_build_linear_rx_skb(struct net_device *netdev, void *va, si
 	if (unlikely(!skb))
 		return NULL;
 
-	trace_printk(">>> va %llx offset %llu size %lu\n", (u64)va, (u64)(va - page_address), size);
+	trace_debug(">>> va %llx offset %llu size %lu\n", (u64)va, (u64)(va - page_address), size);
 	skb_reserve(skb, va - page_address);
 	skb_put(skb, size);
 
@@ -1045,7 +1045,7 @@ static inline ssize_t maio_napi(struct file *file, const char __user *buf,
 		return -ENODEV;
 	}
 
-	trace_printk("scheduling NAPI for dev %lu\n", dev_idx);
+	trace_debug("scheduling NAPI for dev %lu\n", dev_idx);
 	tx_thread = &maio_tx_threads[dev_idx].tx_thread[ring_id];
 	maio_post_napi_page(tx_thread/*, napi*/);
 	//TODO: consider napi_schedule_irqoff -- is this rentrant
@@ -1142,7 +1142,7 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 
 	assert(netdev_idx != -1);
 
-	trace_printk("[%d]Starting <%lu>\n",smp_processor_id(), tx_thread->tx_counter & ((tx_thread)->tx_sz -1));
+	trace_debug("[%d]Starting <%lu>\n",smp_processor_id(), tx_thread->tx_counter & ((tx_thread)->tx_sz -1));
 
 	while ((uaddr = tx_ring_entry(tx_thread))) {
 		struct sk_buff *skb;
@@ -1235,7 +1235,7 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 		len 	= md->len;// + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 		//size 	= maio_stride - ((u64)kaddr & (maio_stride -1));
 
-		trace_printk("TX %llx/%llx [%d]from user %llx [#%d] len %d\n",
+		trace_debug("TX %llx/%llx [%d]from user %llx [#%d] len %d\n",
 				(u64)kaddr, (u64)page, page_ref_count(page),
 				(u64)uaddr, cnt, len);
 		if (unlikely(((uaddr & (PAGE_SIZE -1)) + len) > PAGE_SIZE)) {
@@ -1263,7 +1263,7 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 		The user process is not running time slice is used here.
 	*/
 	//napi_complete_done(napi, cnt);
-	trace_printk("poll complete %d\n", cnt);
+	trace_debug("poll complete %d\n", cnt);
 	return cnt;
 }
 

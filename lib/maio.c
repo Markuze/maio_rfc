@@ -91,6 +91,8 @@ static bool lwm_triggered;
 static int maio_post_tx_task(void *state);
 static int (*threadfn)(void *data) = maio_post_tx_task;
 
+static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_struct *napi*/);
+
 static inline bool maio_hwm_crossed(void)
 {
 	return (mag_get_full_count(&global_maio.mag[0]) > maio_mag_hwm);
@@ -674,7 +676,7 @@ send_the_page:
 		goto send_the_page;
 	}
 
-	trace_debug("kaddr %llx, len %d [%llx]\n", (u64)addr, len, (u64)page);
+	trace_printk("kaddr %llx, len %d\n", (u64)addr, len);
 	if (!page) {
 		void *buff;
 
@@ -719,14 +721,33 @@ send_the_page:
 	md->len 	= len;
 	md->poison	= MAIO_POISON;
 
+/***************
+	Testing NAPI code:
+		1. post to napi ring.
+		2. schedule/call.
+**************/
+
+#if 1
 	qp->rx_ring[qp->rx_counter & (qp->rx_sz -1)] = addr2uaddr(addr);
 	++qp->rx_counter;
-
-	trace_debug("%d:RX[%lu] %s:%llx[%u]%llx{%d}\n", smp_processor_id(),
-			qp->rx_counter & (qp->rx_sz -1),
+#else
+	/** debugging napi rx **/
+	if (1) {
+		struct maio_tx_thread *tx_thread;
+		static long unsigned tx_counter;
+		tx_thread = &maio_tx_threads[netdev->ifindex].tx_thread[NAPI_THREAD_IDX];
+		//maio_post_napi_page(tx_thread/*, napi*/);
+		tx_thread->tx_ring[tx_counter & (tx_thread->tx_sz -1)] = addr2uaddr(addr);
+		++tx_counter;
+		trace_printk("%d:RX[%lu] %s:%llx[%u]%llx{%d}\n", smp_processor_id(),
+			tx_counter & (tx_thread->tx_sz -1),
 			page ? "COPY" : "ZC",
 			(u64)addr, len,
 			addr2uaddr(addr), page_ref_count(page));
+
+		maio_post_napi_page(tx_thread/*, napi*/);
+	}
+#endif
 	return 1; //TODO: When buffer taken. put page of orig.
 }
 
@@ -794,6 +815,28 @@ unlock:
 
 #define tx_ring_entry(qp) 	(qp)->tx_ring[(qp)->tx_counter & ((qp)->tx_sz -1)]
 #define advance_tx_ring(qp)	(qp)->tx_ring[(qp)->tx_counter++ & ((qp)->tx_sz -1)] = 0
+
+struct sk_buff *maio_build_linear_rx_skb(struct net_device *netdev, void *va, size_t size)
+{
+	void *page_address = (void *)((u64)va & PAGE_MASK);
+	struct sk_buff *skb = build_skb(page_address, PAGE_SIZE);
+
+	if (unlikely(!skb))
+		return NULL;
+
+	trace_printk(">>> va %llx offset %llu size %lu\n", (u64)va, (u64)(va - page_address), size);
+	skb_reserve(skb, va - page_address);
+	skb_put(skb, size);
+
+	skb->mac_len = ETH_HLEN;
+
+	//skb_record_rx_queue(skb, 0);
+	skb->protocol = eth_type_trans(skb, netdev);
+	skb->ip_summed = CHECKSUM_UNNECESSARY;
+	skb->dev = netdev;
+
+	return skb;
+}
 
 #define TX_BATCH_SIZE	32
 int maio_post_tx_page(void *state)
@@ -909,6 +952,7 @@ int maio_post_tx_page(void *state)
 			pr_err("Buffer to Long [%llx] len %u klen = %u\n", uaddr, md->len, len);
 			continue;
 		}
+
 		skb = build_skb(kaddr, size);//TODO:
 		skb_put(skb, md->len);
 		skb->dev = tx_thread->netdev;
@@ -971,7 +1015,6 @@ static inline ssize_t maio_tx(struct file *file, const char __user *buf,
 	return size;
 }
 
-static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_struct *napi*/);
 static inline ssize_t maio_napi(struct file *file, const char __user *buf,
                                     size_t size, loff_t *_pos)
 {
@@ -1103,7 +1146,7 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 
 	while ((uaddr = tx_ring_entry(tx_thread))) {
 		struct sk_buff *skb;
-		unsigned len, size;
+		unsigned	len;
 		void 		*kaddr	= uaddr2addr(uaddr);
 		struct page     *page	= virt_to_page(kaddr);
 
@@ -1189,20 +1232,22 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 			continue;
 		}
 
-		len 	= md->len + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-		size 	= maio_stride - ((u64)kaddr & (maio_stride -1));
+		len 	= md->len;// + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+		//size 	= maio_stride - ((u64)kaddr & (maio_stride -1));
 
-		trace_printk("TX %llx/%llx [%d]from user %llx [#%d]\n",
+		trace_printk("TX %llx/%llx [%d]from user %llx [#%d] len %d\n",
 				(u64)kaddr, (u64)page, page_ref_count(page),
-				(u64)uaddr, cnt);
+				(u64)uaddr, cnt, len);
 		if (unlikely(((uaddr & (PAGE_SIZE -1)) + len) > PAGE_SIZE)) {
 			pr_err("Buffer to Long [%llx] len %u klen = %u\n", uaddr, md->len, len);
 			continue;
 		}
-		skb = build_skb(kaddr - NET_SKB_PAD, size);
-		skb_reserve(skb, NET_SKB_PAD);
-		skb_put(skb, md->len);
-		skb->dev = tx_thread->netdev;
+		skb = maio_build_linear_rx_skb(tx_thread->netdev, kaddr, len);
+		if (unlikely(!skb)) {
+			pr_err("Failed to alloc napi skb\n");
+			put_page(page);
+			continue;
+		}
 		cnt++;
 		//OPTION: Use non napi API: netif_rx but lose GRO.
 		netif_rx(skb);

@@ -36,7 +36,8 @@ struct maio_tx_threads {
 };
 
 /* GLOBAL MAIO FLAG*/
-static bool maio_dev_configured[MAX_DEV_NUM];
+volatile bool maio_configured;
+EXPORT_SYMBOL(maio_configured);
 
 maio_filter_func_p maio_filter;
 EXPORT_SYMBOL(maio_filter);
@@ -91,14 +92,6 @@ static int maio_post_tx_task(void *state);
 static int (*threadfn)(void *data) = maio_post_tx_task;
 
 static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_struct *napi*/);
-
-bool maio_configured(int idx)
-{
-	if (idx > MAX_DEV_NUM || idx > 0)
-		return false;
-	return maio_dev_configured[idx];
-}
-EXPORT_SYMBOL(maio_configured);
 
 static inline bool maio_hwm_crossed(void)
 {
@@ -416,6 +409,9 @@ struct page *maio_alloc_pages(size_t order)
 	void *buffer;
 
 
+	if (unlikely( ! maio_configured))
+		return NULL;
+
 	buffer = mag_alloc_elem(&global_maio.mag[order2idx(order)]);
 
 	/* should happen on init when mag is empty.*/
@@ -543,7 +539,6 @@ static inline int setup_dev_idx(unsigned dev_idx)
 	if (netif_is_bond_slave(dev))
 		return -EINVAL;
 
-//TODO: rm on_tx
 	dev_map.on_tx[dev_idx] = dev_idx;
 	dev_map.on_rx[dev_idx] = dev_idx;
 
@@ -560,7 +555,6 @@ static inline int setup_dev_idx(unsigned dev_idx)
 		}
 		//On RX choose the correct  QP
 		dev_map.on_rx[iter_dev->ifindex] = dev_idx;
-		maio_dev_configured[iter_dev->ifindex] = true;
 		maio_devs[iter_dev->ifindex] = iter_dev;
 	}
 
@@ -625,7 +619,7 @@ static inline int __maio_post_rx_page(struct net_device *netdev, struct page *pa
 	struct percpu_maio_dev_qp *dev_qp = this_cpu_ptr(&maio_dev_qp);
 	struct percpu_maio_qp *qp;
 
-	if (unlikely(!maio_configured(qp_idx)))
+	if (unlikely(!maio_configured))
 		return 0;
 
 	if (qp_idx == -1) {
@@ -993,6 +987,9 @@ static inline ssize_t maio_tx(struct file *file, const char __user *buf,
 	size_t 	dev_idx, ring_id;
 	unsigned long  val;
 
+	if (unlikely(!maio_configured))
+		return -ENODEV;
+
 	if (unlikely(size < 1 || size >= MAIO_TX_KBUFF_SZ))
 	        return -EINVAL;
 
@@ -1002,9 +999,6 @@ static inline ssize_t maio_tx(struct file *file, const char __user *buf,
 
 	dev_idx = simple_strtoull(kbuff, &cur, 10);
 	ring_id = simple_strtoull(cur + 1, &cur, 10);
-
-	if (unlikely(!maio_configured(dev_idx)))
-		return 0;
 
 	if (unlikely(!global_maio_matrix[dev_idx])) {
 		pr_err("global matrix not configured!!!");
@@ -1030,6 +1024,9 @@ static inline ssize_t maio_napi(struct file *file, const char __user *buf,
 	char	kbuff[MAIO_TX_KBUFF_SZ], *cur;
 	size_t 	dev_idx, ring_id;
 
+	if (unlikely(!maio_configured))
+		return -ENODEV;
+
 	if (unlikely(size < 1 || size >= MAIO_TX_KBUFF_SZ))
 	        return -EINVAL;
 
@@ -1039,9 +1036,6 @@ static inline ssize_t maio_napi(struct file *file, const char __user *buf,
 
 	dev_idx = simple_strtoull(kbuff, &cur, 10);
 	ring_id = simple_strtoull(cur + 1, &cur, 10);
-
-	if (unlikely(!maio_configured(dev_idx)))
-		return 0;
 
 	if (unlikely(ring_id != NAPI_THREAD_IDX)) {
 		pr_err("wrong NAPI_THREAD_IDX %lu != %u\n", ring_id, NAPI_THREAD_IDX);
@@ -1112,13 +1106,13 @@ static inline ssize_t maio_enable(struct file *file, const char __user *buf,
 		return -ENODEV;
 	}
 
-	pr_err("%s: dev %lu:: Now: [%s] was %s\n", __FUNCTION__, dev_idx, val ? "Configured" : "Off", maio_configured(dev_idx) ? "Configured" : "Off");
-	trace_printk("%s: dev %lu:: Now: [%s] was %s\n", __FUNCTION__, dev_idx, val ? "Configured" : "Off", maio_configured(dev_idx) ? "Configured" : "Off");
+	pr_err("%s: dev %lu:: Now: [%s] was %s\n", __FUNCTION__, dev_idx, val ? "Configured" : "Off", maio_configured ? "Configured" : "Off");
+	trace_printk("%s: dev %lu:: Now: [%s] was %s\n", __FUNCTION__, dev_idx, val ? "Configured" : "Off", maio_configured ? "Configured" : "Off");
 
 	kfree(kbuff);
 
 	if (val == 0 || val == 1)
-		maio_dev_configured[dev_idx] = val;
+		maio_configured = val;
 	else
 		return -EINVAL;
 #if 0
@@ -1464,11 +1458,12 @@ static inline void reset_global_maio_state(void)
 	memset(maio_devs, 0, sizeof(maio_devs));
 }
 
-/* TODO: stop works globaly - make per dev */
 static inline void maio_stop(void)
 {
 	//maio_disable
 	int i = 0, cpu = 0;
+
+	maio_configured = 0;
 
 	pr_err("%s\n", __FUNCTION__);
 	//ndo_dev_stop for each
@@ -1637,7 +1632,7 @@ static ssize_t maio_napi_write(struct file *file,
 
 static int maio_enable_show(struct seq_file *m, void *v)
 {
-	seq_printf(m, "%d\n", maio_configured(last_dev_idx) ? 1 : 0);
+	seq_printf(m, "%d\n", maio_configured ? 1 : 0);
         return 0;
 }
 
@@ -1769,7 +1764,7 @@ static __init int maio_init(void)
 	int i = 0;
 
 	maio_filter = test_maio_filter;
-	//maio_configured = false;
+	maio_configured = false;
 	for (;i< NUM_MAIO_SIZES; i++)
 		mag_allocator_init(&global_maio.mag[i]);
 

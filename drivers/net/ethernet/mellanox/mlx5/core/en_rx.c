@@ -246,7 +246,7 @@ static inline int mlx5e_page_alloc_pool(struct mlx5e_rq *rq,
 	if (mlx5e_rx_cache_get(rq, dma_info))
 		return 0;
 */
-	if (likely(maio_configured(rq->netdev->ifindex))) {
+	if (likely(maio_configured)) {
 		dma_info->page = maio_alloc_page();
 	} else {
 		dma_info->page = page_pool_dev_alloc_pages(rq->page_pool);
@@ -260,7 +260,7 @@ static inline int mlx5e_page_alloc_pool(struct mlx5e_rq *rq,
 	dma_info->addr = dma_map_page(rq->pdev, dma_info->page, 0,
 				      PAGE_SIZE, rq->buff.map_dir);
 	if (unlikely(dma_mapping_error(rq->pdev, dma_info->addr))) {
-		if (maio_configured(rq->netdev->ifindex))
+		if (maio_configured)
 			put_page(dma_info->page);
 		else
 			page_pool_recycle_direct(rq->page_pool, dma_info->page);

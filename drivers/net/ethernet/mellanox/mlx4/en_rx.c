@@ -59,7 +59,7 @@ static int mlx4_alloc_page(struct mlx4_en_priv *priv,
 	struct page *page;
 	dma_addr_t dma;
 #if 0
-	if (likely(maio_configured)) {
+	if (likely(maio_configured(priv->dev->ifindex))) {
 		page = maio_alloc_page();
 	} else {
 		page = alloc_page(gfp);
@@ -466,9 +466,11 @@ bool mlx4_en_rx_recycle(struct mlx4_en_rx_ring *ring,
 {
 	struct mlx4_en_page_cache *cache = &ring->page_cache;
 
+/*
+	TODO: Fixup zcopy and get netdevice
 	if (likely(maio_configured))
 		return false;
-
+*/
 	if (cache->index >= MLX4_EN_CACHE_SIZE)
 		return false;
 

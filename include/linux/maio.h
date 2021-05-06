@@ -36,7 +36,6 @@
 typedef bool (*maio_filter_func_p)(void *);
 
 extern maio_filter_func_p maio_filter;
-extern volatile bool maio_configured;
 extern struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
 
 /******** MAIO PAGE PRIVATE FLAGS ****************/
@@ -143,6 +142,7 @@ struct maio_dev_map {
 	int on_rx[MAX_DEV_NUM];
 };
 
+bool maio_configured(int);
 void reset_maio_default_filter(void);
 u16 maio_get_page_headroom(struct page *page);
 int maio_post_rx_page(struct net_device *net, void *addr, u32 len);

@@ -763,10 +763,18 @@ static void netvsc_comp_ipcsum(struct sk_buff *skb)
 
 static int netvsc_run_maio(struct net_device *net, struct netvsc_channel *nvchan)
 {
-	//trace_printk("received %d bytes in %d chunks\n", nvchan->rsc.pktlen, nvchan->rsc.cnt);
 	if (nvchan->rsc.cnt == 1) {
-		//trace_printk("post rx %llx %d\n", (u64)nvchan->rsc.data[0], nvchan->rsc.len[0]);
-		return maio_post_rx_page_copy(net, nvchan->rsc.data[0], nvchan->rsc.len[0]);
+		const struct ndis_pkt_8021q_info *vlan = nvchan->rsc.vlan;
+		u16 vlan_tci 	= 0;
+		u16 flags	= 0;
+
+		if (vlan) {
+			vlan_tci = vlan->vlanid | (vlan->pri << VLAN_PRIO_SHIFT) |
+				(vlan->cfi ? VLAN_CFI_MASK : 0);
+			flags 	|= MAIO_STATUS_VLAN_VALID;
+		}
+
+		return maio_post_rx_page_copy(net, nvchan->rsc.data[0], nvchan->rsc.len[0], vlan_tci, flags);
 	} else {
 		trace_printk("%s: received %d bytes in %d chunks\n", __FUNCTION__, nvchan->rsc.pktlen, nvchan->rsc.cnt);
 	}

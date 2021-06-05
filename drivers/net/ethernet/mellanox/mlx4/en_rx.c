@@ -760,6 +760,9 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 		void *va;
 		int nr;
 
+		u16 vlan_tci = 0;
+		u16 maio_flags = 0;
+
 		frags = ring->rx_info + (index << priv->log_rx_info);
 		va = page_address(frags[0].page) + frags[0].page_offset;
 		prefetchw(va);
@@ -821,7 +824,14 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 		length = be32_to_cpu(cqe->byte_cnt);
 		length -= ring->fcs_del;
 
-		if (maio_post_rx_page_copy(dev, va, length))
+		if ((cqe->vlan_my_qpn &
+		     cpu_to_be32(MLX4_CQE_CVLAN_PRESENT_MASK|MLX4_CQE_SVLAN_PRESENT_MASK)) &&
+		    (dev->features & (NETIF_F_HW_VLAN_CTAG_RX|NETIF_F_HW_VLAN_STAG_RX))) {
+			vlan_tci	= be16_to_cpu(cqe->sl_vid);
+			maio_flags	|= MAIO_STATUS_VLAN_VALID;
+		}
+
+		if (maio_post_rx_page_copy(dev, va, length, vlan_tci, maio_flags))
 			goto next; /* page/packet was consumed by MAIO */
 
 

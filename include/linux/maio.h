@@ -50,10 +50,13 @@ extern struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
 
 /********* Caution: Should be same as user counterpart ************************/
 
-#define MAIO_POISON (0xFEA20FDAU)
+#define MAIO_POISON 		(0xFEA20FDAU)
+#define MAIO_STATUS_VLAN_VALID 	(0x1)
 
 struct io_md {
         u32 len;
+	u16 vlan_tci;
+	u16 flags;
         u32 poison;
 };
 
@@ -145,8 +148,8 @@ struct maio_dev_map {
 bool maio_configured(int);
 void reset_maio_default_filter(void);
 u16 maio_get_page_headroom(struct page *page);
-int maio_post_rx_page(struct net_device *net, void *addr, u32 len);
-int maio_post_rx_page_copy(struct net_device *net, void *addr, u32 len);
+int maio_post_rx_page(struct net_device *netdev, void *addr, u32 len, u16 vlan_tci, u16 flags);
+int maio_post_rx_page_copy(struct net_device *netdev, void *addr, u32 len, u16 vlan_tci, u16 flags);
 void maio_frag_free(void *addr);
 void maio_page_free(struct page *page);
 void *maio_kalloc(void);

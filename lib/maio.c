@@ -585,7 +585,8 @@ static inline bool test_maio_filter(void *addr)
        trgt = (10|5<<8|3<<16|9<<24);
 
        if (trgt == iphdr->saddr) {
-               trace_debug("SIP: %pI4 N[%x] DIP: %pI4 N[%x]\n", &iphdr->saddr, iphdr->saddr, &iphdr->daddr, iphdr->daddr);
+               trace_debug("SIP: %pI4 N[%x] DIP: %pI4 N[%x]\n",
+				&iphdr->saddr, iphdr->saddr, &iphdr->daddr, iphdr->daddr);
                return 0;
        }
        return 1;
@@ -617,7 +618,9 @@ static inline int filter_packet(void *addr)
 	return maio_filter(addr);
 }
 
-static inline int __maio_post_rx_page(struct net_device *netdev, struct page *page, void *addr, u32 len)
+//TODO: Add support for vlan detection __vlan_hwaccel
+static inline int __maio_post_rx_page(struct net_device *netdev, struct page *page,
+					void *addr, u32 len, u16 vlan_tci, u16 flags)
 {
 	u64 qp_idx = get_rx_qp_idx(netdev);
 	struct page *refill = NULL;
@@ -726,6 +729,8 @@ send_the_page:
 	md--;
 	md->len 	= len;
 	md->poison	= MAIO_POISON;
+	md->vlan_tci	= vlan_tci;
+	md->flags	= flags;
 
 /***************
 	Testing NAPI code:
@@ -757,15 +762,14 @@ send_the_page:
 	return 1; //TODO: When buffer taken. put page of orig.
 }
 
-int maio_post_rx_page_copy(struct net_device *netdev, void *addr, u32 len)
+int maio_post_rx_page_copy(struct net_device *netdev, void *addr, u32 len, u16 vlan_tci, u16 flags)
 {
 	/* NULL means copy data to MAIO page*/
-	return __maio_post_rx_page(netdev, NULL, addr, len);
+	return __maio_post_rx_page(netdev, NULL, addr, len, vlan_tci, flags);
 }
 EXPORT_SYMBOL(maio_post_rx_page_copy);
 
-//134 cscope
-int maio_post_rx_page(struct net_device *netdev, void *addr, u32 len)
+int maio_post_rx_page(struct net_device *netdev, void *addr, u32 len, u16 vlan_tci, u16 flags)
 {
 	struct page* page = virt_to_page(addr);
 
@@ -774,7 +778,7 @@ int maio_post_rx_page(struct net_device *netdev, void *addr, u32 len)
 	else
 		page = NULL;
 
-	if ( ! __maio_post_rx_page(netdev, page, addr, len)) {
+	if ( ! __maio_post_rx_page(netdev, page, addr, len, vlan_tci, flags)) {
 		if (page)
 			put_page(page);
 		return 0;
@@ -783,7 +787,6 @@ int maio_post_rx_page(struct net_device *netdev, void *addr, u32 len)
 }
 EXPORT_SYMBOL(maio_post_rx_page);
 
-//pktgen xmit
 //TODO: Loop inside lock
 // use dev_direct_xmit / xsk_generic_xmit
 int maio_xmit(struct net_device *dev, struct sk_buff **skb, int cnt)
@@ -961,9 +964,11 @@ int maio_post_tx_page(void *state)
 			continue;
 		}
 
-		skb = build_skb(kaddr, size);//TODO:
+		skb = build_skb(kaddr, size);
 		skb_put(skb, md->len);
 		skb->dev = tx_thread->netdev;
+		if (md->flags & MAIO_STATUS_VLAN_VALID)
+			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), md->vlan_tci);
 		//get_page(virt_to_page(kaddr));
 		skb_batch[cnt++] = skb;
 
@@ -1656,7 +1661,7 @@ static int maio_map_show(struct seq_file *m, void *v)
         return 0;
 }
 
-#define MAIO_VERSION	"v0.6-napi"
+#define MAIO_VERSION	"v0.7-vlan"
 static int maio_version_show(struct seq_file *m, void *v)
 {
 	seq_printf(m, "%s\n", MAIO_VERSION);

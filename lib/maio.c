@@ -54,8 +54,8 @@ EXPORT_SYMBOL(global_maio_matrix);
 
 static unsigned last_dev_idx;
 
-static u16 maio_headroom = (0x800 -512);
-static u16 maio_stride = 0x1000;//4K
+static u16 maio_headroom	= (0x800 -512 -192); 	//This should make a zero gap between vc_pckt and headroom + data
+static u16 maio_stride		= 0x1000; 		//4K
 
 /* HP Cache */
 static LIST_HEAD(hp_cache);
@@ -117,11 +117,15 @@ static inline bool maio_lwm_crossed(void)
 	return lwm_triggered;
 }
 
-static inline u64* page2track(struct page *page)
+static inline struct io_md* virt2io_md(void *va)
 {
-	u64 track = (u64)page_address(&page[1]);
-	track -= 512;
-	return (u64 *)track;
+	uint64_t addr = (uint64_t)va & PAGE_MASK;
+	return (void *)(addr + maio_headroom + 0x800);
+}
+
+static inline struct io_md* page2io_md(struct page *page)
+{
+	return virt2io_md(page_address(page));
 /*
 	struct io_track *track;
 	int idx;
@@ -139,14 +143,14 @@ static inline u64* page2track(struct page *page)
 
 static inline void set_page_state(struct page *page, u64 new_state)
 {
-	u64 *state = page2track(page);
-	*state = new_state;
+	struct io_md *md = page2io_md(page);
+	md->state = new_state;
 }
 
 static inline u64 get_page_state(struct page *page)
 {
-	u64 *state = page2track(page);
-	return *state;
+	struct io_md *md = page2io_md(page);
+	return md->state;
 }
 
 static inline void flush_all_mtts(void)
@@ -725,8 +729,7 @@ send_the_page:
 	assert(get_page_state(page) == MAIO_PAGE_RX);
 	set_page_state(page, MAIO_PAGE_USER);
 	assert(uaddr2addr(addr2uaddr(addr)) == addr);
-	md = addr;
-	md--;
+	md = virt2io_md(addr);
 	md->len 	= len;
 	md->poison	= MAIO_POISON;
 	md->vlan_tci	= vlan_tci;
@@ -890,7 +893,7 @@ int maio_post_tx_page(void *state)
 		if (unlikely(!is_maio_page(page))) {
 
 			if (PageHead(page)) {
-				struct io_md *buff;
+				void *buff;
 
 				set_maio_is_io(page);
 				set_page_state(page, MAIO_POISON); // Need to add on NEW USER pages.
@@ -904,19 +907,19 @@ int maio_post_tx_page(void *state)
 
 				buff = (void *)((u64)buff + maio_get_page_headroom(NULL));
 
-				md = kaddr;
-				md--;
+				md = virt2io_md(kaddr);
 
 				len = md->len;
-				len += sizeof(*md);
 
 				trace_debug("TX] :COPY %u [%u] to page %llx[%d] addr %llx\n", len,
 						maio_get_page_headroom(NULL),
 						(u64)page, page_ref_count(page), (u64)kaddr);
 				assert(len <= (PAGE_SIZE - maio_get_page_headroom(NULL)));
 
-				memcpy(buff, md, len);
-				kaddr = &buff[1];
+				memcpy(buff, kaddr, len);
+				memcpy(virt2io_md(buff), md, sizeof(struct io_md));
+
+				kaddr = buff;
 			} else {
 				panic("This shit cant happen!\n"); //uaddr2addr would fail first
 			}
@@ -928,8 +931,7 @@ int maio_post_tx_page(void *state)
 		}
 
 		set_page_state(page, MAIO_PAGE_TX);
-		md = kaddr;
-		md--;
+		md = virt2io_md(kaddr);
 
 		if (unlikely(md->poison != MAIO_POISON)) {
 			pr_err("NO MAIO-POISON <%x>Found [%llx] -- Please make sure to put the buffer\n"
@@ -1183,7 +1185,7 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 		if (unlikely(!is_maio_page(page))) {
 
 			if (PageHead(page)) {
-				struct io_md *buff;
+				void *buff;
 
 				set_maio_is_io(page);
 				set_page_state(page, MAIO_POISON); // Need to add on NEW USER pages.
@@ -1191,25 +1193,24 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 				page = maio_alloc_page();
 				if (!page)
 					return 0;
+
 				/* For the assert */
 				set_page_state(page, MAIO_PAGE_USER);
 				buff = page_address(page);
-
 				buff = (void *)((u64)buff + maio_get_page_headroom(NULL));
 
-				md = kaddr;
-				md--;
+				md = virt2io_md(kaddr);
 
 				len = md->len;
-				len += sizeof(*md);
 
 				trace_debug("TX] :COPY %u [%u] to page %llx[%d] addr %llx\n", len,
 						maio_get_page_headroom(NULL),
 						(u64)page, page_ref_count(page), (u64)kaddr);
 				assert(len <= (PAGE_SIZE - maio_get_page_headroom(NULL)));
 
-				memcpy(buff, md, len);
-				kaddr = &buff[1];
+				memcpy(buff, kaddr, len);
+				memcpy(virt2io_md(buff), md, sizeof(struct io_md));
+				kaddr = buff;
 			} else {
 				panic("This shit cant happen!\n"); //uaddr2addr would fail first
 			}
@@ -1221,8 +1222,7 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 		}
 
 		set_page_state(page, MAIO_PAGE_NAPI);
-		md = kaddr;
-		md--;
+		md = virt2io_md(kaddr);
 
 		if (unlikely(md->poison != MAIO_POISON)) {
 			pr_err("NO MAIO-POISON <%x>Found [%llx] -- Please make sure to put the buffer\n"

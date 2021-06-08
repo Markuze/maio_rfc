@@ -38,7 +38,7 @@ typedef bool (*maio_filter_func_p)(void *);
 extern maio_filter_func_p maio_filter;
 extern struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
 
-/******** MAIO PAGE PRIVATE FLAGS ****************/
+/******** MAIO PAGE STATE FLAGS ****************/
 #define MAIO_PAGE_HEAD 0x2000
 #define MAIO_PAGE_FREE 0x1000
 #define MAIO_PAGE_IO   (MAIO_PAGE_TX|MAIO_PAGE_RX|MAIO_PAGE_NAPI)   // TX|RX|NAPI
@@ -48,16 +48,21 @@ extern struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
 #define MAIO_PAGE_USER 0x100   // page in user space control
 /*************************************************/
 
+/* Current mem layout
+	4K [64|128 |640   | 512     |2KB  |384 B|320 B      ]
+	   [ dpdk  |vc_pkt| headroom| data| hole| skb_shinfo]
+*/
 /********* Caution: Should be same as user counterpart ************************/
 
 #define MAIO_POISON 		(0xFEA20FDAU)
 #define MAIO_STATUS_VLAN_VALID 	(0x1)
 
 struct io_md {
-        u32 len;
+	u64 state;
+	u32 len;
+	u32 poison;
 	u16 vlan_tci;
 	u16 flags;
-        u32 poison;
 };
 
 struct common_ring_info {

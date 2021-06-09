@@ -600,14 +600,14 @@ static inline bool test_maio_filter(void *addr)
 
 
        if (trgt == iphdr->saddr) {
-               trace_debug("SIP: %pI4 N[%x] DIP: %pI4 N[%x]\n", &iphdr->saddr, iphdr->saddr, &iphdr->daddr, iphdr->daddr);
+               trace_printk("SIP: %pI4 N[%x] DIP: %pI4 N[%x]\n", &iphdr->saddr, iphdr->saddr, &iphdr->daddr, iphdr->daddr);
                return 0;
        }
 
        trgt = (10|5<<8|3<<16|9<<24);
 
        if (trgt == iphdr->saddr) {
-               trace_debug("SIP: %pI4 N[%x] DIP: %pI4 N[%x]\n",
+               trace_printk("SIP: %pI4 N[%x] DIP: %pI4 N[%x]\n",
 				&iphdr->saddr, iphdr->saddr, &iphdr->daddr, iphdr->daddr);
                return 0;
        }
@@ -885,7 +885,7 @@ int maio_post_tx_page(void *state)
 
 	assert(netdev_idx != -1);
 
-	trace_debug("[%d]Starting <%d>\n",smp_processor_id(), tx_thread->tx_counter & ((qp)->tx_sz -1));
+	trace_printk("[%d]Starting\n",smp_processor_id());
 
 	while ((uaddr = tx_ring_entry(tx_thread))) {
 		struct sk_buff *skb;
@@ -896,7 +896,7 @@ int maio_post_tx_page(void *state)
 		advance_tx_ring(tx_thread);
 
 		if (unlikely(IS_ERR_OR_NULL(kaddr))) {
-			trace_debug("Invalid kaddr %llx from user %llx\n", (u64)kaddr, (u64)uaddr);
+			trace_printk("Invalid kaddr %llx from user %llx\n", (u64)kaddr, (u64)uaddr);
 			pr_err("Invalid kaddr %llx from user %llx\n", (u64)kaddr, (u64)uaddr);
 			continue;
 		}
@@ -931,7 +931,7 @@ int maio_post_tx_page(void *state)
 
 				len = md->len;
 
-				trace_debug("TX] :COPY %u [%u] to page %llx[%d] addr %llx\n", len,
+				trace_printk("TX] :COPY %u [%u] to page %llx[%d] addr %llx\n", len,
 						maio_get_page_headroom(NULL),
 						(u64)page, page_ref_count(page), (u64)kaddr);
 				assert(len <= (PAGE_SIZE - maio_get_page_headroom(NULL)));
@@ -967,7 +967,7 @@ int maio_post_tx_page(void *state)
 
 		/* A refill page from user following an lwm crosss */
 		if (unlikely(!md->len)) {
-			trace_debug(" Received page from user [%d](%d)\n", mag_get_full_count(&global_maio.mag[0]), page_ref_count(page));
+			trace_printk(" Received page from user [%d](%d)\n", mag_get_full_count(&global_maio.mag[0]), page_ref_count(page));
 			put_page(page);
 			local_lwm = false;
 
@@ -978,7 +978,8 @@ int maio_post_tx_page(void *state)
 		len 	= md->len + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 		size 	= maio_stride - ((u64)kaddr & (maio_stride -1));
 
-		trace_debug("TX %llx/%llx [%d]from user %llx [#%d]\n",
+		show_io(kaddr, "TX");
+		trace_printk("TX %llx/%llx [%d]from user %llx [#%d]\n",
 				(u64)kaddr, (u64)page, page_ref_count(page),
 				(u64)uaddr, cnt);
 		if (unlikely(((uaddr & (PAGE_SIZE -1)) + len) > PAGE_SIZE)) {
@@ -998,11 +999,11 @@ int maio_post_tx_page(void *state)
 			break;
 	}
 
-	trace_debug("%d: Sending %d buffers. counter %d\n", smp_processor_id(), cnt, tx_thread->tx_counter);
+	trace_printk("%d: Sending %d buffers. counter %lu\n", smp_processor_id(), cnt, tx_thread->tx_counter);
 	if (cnt)
 		copy = maio_xmit(tx_thread->netdev, skb_batch, cnt);
 
-	trace_debug("%d: Sending %d buffers. rc %d\n", smp_processor_id(), cnt, copy);
+	trace_printk("%d: Sending %d buffers. rc %d\n", smp_processor_id(), cnt, copy);
 
 	lwm_triggered = local_lwm;
 

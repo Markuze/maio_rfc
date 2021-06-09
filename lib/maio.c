@@ -572,6 +572,24 @@ static inline int setup_dev_idx(unsigned dev_idx)
 	return 0;
 }
 
+//#define show_io(...)
+
+#ifndef show_io
+#define show_io	__show_io
+#endif
+
+static inline void __show_io(void *addr, const char *str)
+{
+	struct io_md 	*md 	= virt2io_md(addr);
+	struct ethhdr   *eth    = addr;
+	struct iphdr    *iphdr  = (struct iphdr *)&eth[1];
+
+	trace_printk("%s>\t SIP: %pI4 DIP: %pI4\n"
+			"\t len %d [%x] (vlan %d [%d]): state %llx\n"
+			,str, &iphdr->saddr, &iphdr->daddr,
+			md->len, md->poison, md->vlan_tci, md->flags, md->state);
+}
+
 static inline bool test_maio_filter(void *addr)
 {
        struct ethhdr   *eth    = addr;
@@ -735,16 +753,18 @@ send_the_page:
 	md->vlan_tci	= vlan_tci;
 	md->flags	= flags;
 
+	show_io(addr, "RX");
+#if 1
+	qp->rx_ring[qp->rx_counter & (qp->rx_sz -1)] = addr2uaddr(addr);
+	++qp->rx_counter;
+#else
 /***************
 	Testing NAPI code:
 		1. post to napi ring.
 		2. schedule/call.
 **************/
 
-#if 1
-	qp->rx_ring[qp->rx_counter & (qp->rx_sz -1)] = addr2uaddr(addr);
-	++qp->rx_counter;
-#else
+
 	/** debugging napi rx **/
 	if (1) {
 		struct maio_tx_thread *tx_thread;
@@ -1073,7 +1093,7 @@ static int maio_post_tx_task(void *state)
 
         while (!kthread_should_stop()) {
 		trace_debug("[%d]Running...\n", smp_processor_id());
-		while (maio_post_tx_page(state)); // XMIT as long as there is work to be done.
+		while (maio_post_tx_page(state) == TX_BATCH_SIZE); // XMIT as long as there is work to be done.
 
 		trace_debug("[%d]sleeping...\n", smp_processor_id());
                 set_current_state(TASK_UNINTERRUPTIBLE);

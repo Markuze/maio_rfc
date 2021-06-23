@@ -128,10 +128,18 @@ static inline bool maio_lwm_crossed(void)
 	return lwm_triggered;
 }
 
+static inline struct io_md *kaddr2shadow_md(void *kaddr)
+{
+	u64 shadow = (u64)kaddr;
+	shadow &= PAGE_MASK;
+	shadow += SHADOW_OFF;
+	return (void *)shadow;
+}
+
 static inline struct io_md* virt2io_md(void *va)
 {
 	uint64_t addr = (uint64_t)va & PAGE_MASK;
-	return (void *)(addr + maio_headroom + 0x800);
+	return (void *)(addr + IO_MD_OFF);
 }
 
 static inline struct io_md* page2io_md(struct page *page)
@@ -369,14 +377,6 @@ void maio_page_free(struct page *page)
 }
 EXPORT_SYMBOL(maio_page_free);
 
-static inline struct io_md *kaddr2shadow_md(void *kaddr)
-{
-	u64 shadow = (u64)kaddr;
-	shadow &= PAGE_MASK;
-	shadow += PAGE_SIZE - 512;
-	return (void *)shadow;
-}
-
 void maio_frag_free(void *addr)
 {
 	/*
@@ -393,6 +393,11 @@ void maio_frag_free(void *addr)
 		pr_err("%d:%s:%llx :%s\n", smp_processor_id(), __FUNCTION__, (u64)page_address(page), PageHead(page)?"HEAD":"Tail");
 		dump_io_md(virt2io_md(addr), "MD");
 		dump_io_md(kaddr2shadow_md(addr), "SHADOW");
+		if (kaddr2shadow_md(addr)->state == MAIO_PAGE_NAPI) {
+			// Corruption detected on NAPI flow update from shadow
+			pr_err("Corruption detected on NAPI flow update from shadow\n");
+			memcpy(virt2io_md(addr), kaddr2shadow_md(addr), sizeof(struct io_md));
+		}
 	}
 	assert(get_page_state(page) & MAIO_PAGE_IO);
 	set_page_state(page, MAIO_PAGE_FREE);

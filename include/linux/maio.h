@@ -48,6 +48,7 @@ extern struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
 #define MAIO_PAGE_USER 0x100   // page in user space control
 /*************************************************/
 
+
 /* Current mem layout
 	4K [64|128 |640   | 512     |2KB  |384 B|320 B      ]
 	   [ dpdk  |vc_pkt| headroom| data| hole| skb_shinfo]
@@ -64,6 +65,10 @@ struct io_md {
 	u16 vlan_tci;
 	u16 flags;
 };
+
+#define SHADOW_OFF	(PAGE_SIZE - SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) \
+				- SKB_DATA_ALIGN(sizeof(struct io_md)))
+#define IO_MD_OFF	(PAGE_SIZE - 512)
 
 struct common_ring_info {
         u32 nr_rx_rings;

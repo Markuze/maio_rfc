@@ -954,8 +954,6 @@ int maio_post_tx_page(void *state)
 				page = maio_alloc_page();
 				if (!page)
 					return 0;
-				/* For the assert */
-				set_page_state(page, MAIO_PAGE_USER);
 				buff = page_address(page);
 
 				buff = (void *)((u64)buff + maio_get_page_headroom(NULL));
@@ -971,6 +969,8 @@ int maio_post_tx_page(void *state)
 
 				memcpy(buff, kaddr, len);
 				memcpy(virt2io_md(buff), md, sizeof(struct io_md));
+				/* For the assert */
+				set_page_state(page, MAIO_PAGE_USER);
 
 				kaddr = buff;
 			} else {
@@ -1250,8 +1250,6 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 				if (!page)
 					return 0;
 
-				/* For the assert */
-				set_page_state(page, MAIO_PAGE_USER);
 				buff = page_address(page);
 				buff = (void *)((u64)buff + maio_get_page_headroom(NULL));
 
@@ -1266,6 +1264,9 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 
 				memcpy(buff, kaddr, len);
 				memcpy(virt2io_md(buff), md, sizeof(struct io_md));
+				/* For the assert */
+				set_page_state(page, MAIO_PAGE_USER);
+
 				kaddr = buff;
 			} else {
 				panic("This shit cant happen!\n"); //uaddr2addr would fail first

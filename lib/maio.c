@@ -11,6 +11,8 @@
 #include <linux/ip.h>	/*iphdr*/
 #include <linux/tcp.h>	/*tcphdr*/
 
+#include <net/tcp.h>
+
 #ifndef assert
 #define assert(expr) 	do { \
 				if (unlikely(!(expr))) { \
@@ -47,6 +49,7 @@ static struct page* umem_pages[1<<HUGE_ORDER];
 static struct page* mtrx_pages[1<<HUGE_ORDER];
 
 static struct proc_dir_entry *maio_dir;
+static struct proc_dir_entry *maio_tcp_dir;
 static struct maio_magz global_maio;
 
 struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
@@ -75,6 +78,10 @@ static struct maio_tx_threads	maio_tx_threads[MAX_DEV_NUM];
 static struct net_device *maio_devs[MAX_DEV_NUM] __read_mostly;
 static struct maio_dev_map dev_map;
 
+#define MAX_TCP_THREADS	16
+static int curr_tcp_id;
+static struct maio_tx_thread tcp_threads[MAX_TCP_THREADS];
+
 DEFINE_PER_CPU(struct percpu_maio_dev_qp, maio_dev_qp);
 /* TODO:
 	For multiple reg ops a tree is needed
@@ -88,7 +95,10 @@ static unsigned long maio_mag_hwm  __read_mostly = ULONG_MAX;
 static bool lwm_triggered;
 
 static int maio_post_tx_task(void *state);
+static int maio_post_tx_tcp_task(void *state);
+
 static int (*threadfn)(void *data) = maio_post_tx_task;
+static int (*tcp_threadfn)(void *data) = maio_post_tx_tcp_task;
 
 static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_struct *napi*/);
 
@@ -1051,6 +1061,78 @@ int maio_post_tx_page(void *state)
 	return cnt;
 }
 
+#define valid_tcp_entry(qp) 		((qp)->smd_ring[(qp)->tx_counter & ((qp)->tx_sz -1)].state == MAIO_KERNEL_BUFFER)
+#define next_valid_tcp_entry(qp) 	((qp)->smd_ring[((qp)->tx_counter + 1) & ((qp)->tx_sz -1)].state == MAIO_KERNEL_BUFFER)
+#define tcp_ring_entry(qp) 		&(qp)->smd_ring[(qp)->tx_counter & ((qp)->tx_sz -1)]
+#define tcp_ring_next(qp) 		++((qp)->tx_counter)
+
+int maio_post_tx_tcp_page(void *state)
+{
+	struct maio_tx_thread *tx_thread = state;
+	int cnt = 0;
+
+	trace_debug("[%d]Starting\n",smp_processor_id());
+
+	while (valid_tcp_entry(tx_thread)) {
+		unsigned size;
+		struct sock_md *smd = tcp_ring_entry(tx_thread);
+		void 		*kaddr	= uaddr2addr(smd->uaddr);
+		struct page     *page	= virt_to_page(kaddr);
+
+		advance_tx_ring(tx_thread);
+
+		if (unlikely(IS_ERR_OR_NULL(kaddr))) {
+			trace_printk("Invalid kaddr %llx from user %llx\n", (u64)kaddr, (u64)smd->uaddr);
+			pr_err("Invalid kaddr %llx from user %llx\n", (u64)kaddr, (u64)smd->uaddr);
+			smd->state  = MAIO_BAD_BUFFER;
+			smd->flags = __LINE__;
+			tcp_ring_next(tx_thread);
+			continue;
+		}
+
+		if (unlikely(page_ref_count(page))) {
+			pr_err("TX] Zero fefcount page %llx[%d] addr %llx -- reseting \n",
+				(u64)page, page_ref_count(page), smd->uaddr);
+			panic("Illegal page state\n");
+		}
+
+		if (unlikely(!is_maio_page(page))) {
+			smd->state = MAIO_BAD_BUFFER;
+			smd->flags = __LINE__;
+			tcp_ring_next(tx_thread);
+			continue;
+		}
+		page_ref_inc(page);
+		smd->flags |= next_valid_tcp_entry(tx_thread) ? 0 : MSG_SENDPAGE_NOTLAST;
+#ifndef min
+   #define min(x,y) ((x) < (y) ? x : y)
+#endif
+
+//TODO: DO I really need this shit? what happens with page refcounts when a multipage buffer is sent with tcp_sendpage.
+		do {
+			int off = smd->uaddr & ~PAGE_MASK;
+			size_t bytes = min((size_t)size, (size_t)(PAGE_SIZE -off));
+			int flags = smd->flags;
+
+			size -= bytes;
+
+			flags |= (size) ? 0 : MSG_SENDPAGE_NOTLAST;
+			tcp_sendpage(tx_thread->socket->sk, page, off, bytes, flags);
+			page++;
+			kaddr = page_address(page);
+
+		} while (size);
+
+		smd->state = MAIO_SMD_FREE;
+		tcp_ring_next(tx_thread);
+
+		show_io(kaddr, "TX");
+		++cnt;
+	}
+
+	return cnt;
+}
+
 #define MAIO_TX_KBUFF_SZ	64
 static inline ssize_t maio_tx(struct file *file, const char __user *buf,
                                     size_t size, loff_t *_pos)
@@ -1091,6 +1173,41 @@ static inline ssize_t maio_tx(struct file *file, const char __user *buf,
 	return size;
 }
 
+static inline ssize_t maio_tcp_tx(struct file *file, const char __user *buf,
+					    size_t size, loff_t *_pos)
+{
+	char	kbuff[MAIO_TX_KBUFF_SZ], *cur;
+	struct maio_tx_thread *tx_thread;
+	struct task_struct *thread;
+	size_t 	sock_idx;
+	unsigned long  val;
+
+	if (unlikely(size < 1 || size >= MAIO_TX_KBUFF_SZ))
+	        return -EINVAL;
+
+	if (copy_from_user(kbuff, buf, size)) {
+		return -EFAULT;
+	}
+
+	sock_idx = simple_strtoull(kbuff, &cur, 10);
+
+	if (likely(sock_idx > MAX_TCP_THREADS))
+	        return -EINVAL;
+
+	tx_thread = &tcp_threads[sock_idx];
+	thread = tx_thread->thread;
+
+	if (unlikely(!thread))
+	        return -EINVAL;
+
+	if (thread->state & TASK_NORMAL) {
+	        val = wake_up_process(thread);
+	        trace_debug("[%d]wake up thread[state %0lx][%s]\n", smp_processor_id(), thread->state, val ? "WAKING":"UP");
+	}
+
+	return size;
+}
+
 static inline ssize_t maio_napi(struct file *file, const char __user *buf,
                                     size_t size, loff_t *_pos)
 {
@@ -1127,6 +1244,23 @@ static inline ssize_t maio_napi(struct file *file, const char __user *buf,
 	//TODO: consider napi_schedule_irqoff -- is this rentrant
 	//napi_schedule(napi);
 	return size;
+}
+
+static int maio_post_tx_tcp_task(void *state)
+{
+
+        while (!kthread_should_stop()) {
+		trace_debug("[%d]Running...\n", smp_processor_id());
+		while (maio_post_tx_tcp_page(state) == TX_BATCH_SIZE); // XMIT as long as there is work to be done.
+
+		trace_debug("[%d]sleeping...\n", smp_processor_id());
+                set_current_state(TASK_UNINTERRUPTIBLE);
+                if (!kthread_should_stop()) {
+                        schedule();
+                }
+                __set_current_state(TASK_RUNNING);
+        }
+        return 0;
 }
 
 static int maio_post_tx_task(void *state)
@@ -1586,6 +1720,69 @@ static inline void maio_stop(void)
 	reset_global_maio_state();
 }
 
+/* Not thread safe */
+static inline int alloc_tcp_tx_thread(struct socket *socket)
+{
+	int id = curr_tcp_id++;
+
+	if (id >= MAX_TCP_THREADS)
+		return -ENOMEM;
+
+	tcp_threads[id].thread = kthread_create(tcp_threadfn, &tcp_threads[id], "maio_tcp_thread_%d", id);
+
+	if (IS_ERR(tcp_threads[id].thread)) {
+		pr_err("Failed to create maio_tcp_thread_%d\n", id);
+		return -ENOMEM;
+	}
+	tcp_threads[id].socket = socket;
+	tcp_threads[id].dev_idx = curr_tcp_id;
+
+	return id;
+}
+
+static ssize_t maio_tcp_create_write(struct file *file, const char __user *buffer,
+					size_t size, loff_t *pos)
+{
+	u32 ip, port;
+	char *kbuff, *cur;
+	struct socket *tx = NULL;
+	struct sockaddr_in srv_addr = {0};
+	int rc;
+
+	if (size <= 1 || size >= PAGE_SIZE)
+	        return -EINVAL;
+
+	kbuff = memdup_user_nul(buffer, size);
+	if (IS_ERR(kbuff))
+	        return PTR_ERR(kbuff);
+
+	ip	= simple_strtoull(kbuff, &cur, 10);
+	port	= simple_strtol(cur + 1, &cur, 10);
+	pr_err("%s:Got:%pI4  port %d]\n", __FUNCTION__, &ip, port);
+	kfree(kbuff);
+
+        srv_addr.sin_family             = AF_INET;
+        srv_addr.sin_addr.s_addr        = htonl(ip);
+        srv_addr.sin_port               = htons(port);
+
+	if ((rc = sock_create_kern(&init_net, PF_INET, SOCK_STREAM, IPPROTO_TCP, &tx))) {
+                trace_printk("RC = %d (%d)\n", rc, __LINE__);
+		return rc;
+        }
+
+        if ((rc = kernel_connect(tx, (struct sockaddr *)&srv_addr, sizeof(struct sockaddr), 0))) {
+                trace_printk("RC = %d (%d)\n", rc, __LINE__);
+		goto err;
+        }
+
+	rc = alloc_tcp_tx_thread(tx);
+
+	return rc;
+err:
+	sock_release(tx);
+	return rc;
+}
+
 static inline ssize_t maio_map_page(struct file *file, const char __user *buf,
                                     size_t size, loff_t *_pos, bool cache)
 {
@@ -1661,6 +1858,46 @@ static inline ssize_t maio_map_page(struct file *file, const char __user *buf,
 	return size;
 }
 
+static inline ssize_t init_tcp_ring(struct file *file, const char __user *buf,
+                                    size_t size, loff_t *_pos)
+{
+	char	*kbuff, *cur;
+	size_t 	len;
+	unsigned sock_idx = -1;
+	struct maio_tx_thread *tx_thread;
+	u64	base;
+
+	if (size <= 1 || size >= PAGE_SIZE)
+	        return -EINVAL;
+
+	kbuff = memdup_user_nul(buf, size);
+	if (IS_ERR(kbuff))
+	        return PTR_ERR(kbuff);
+
+	base 		= simple_strtoull(kbuff, &cur, 16);
+	len		= simple_strtol(cur + 1, &cur, 10);
+	sock_idx 	= atou(cur + 1);
+
+	pr_err("%s: Got: [0x%llx: %ld <%ld:%ld>] sock idx %u\n", __FUNCTION__, base, len, len/sizeof(struct sock_md), sizeof(struct sock_md), sock_idx);
+	if (sock_idx >= MAX_TCP_THREADS)
+		return -EINVAL;
+
+	tx_thread = &tcp_threads[sock_idx];
+
+	tx_thread->tx_counter = 0;
+	tx_thread->tx_sz = len/sizeof(struct sock_md);
+	tx_thread->tx_ring = uaddr2addr(base);
+	tx_thread->ring_id = 0;
+
+	return size;
+}
+
+static ssize_t maio_tcp_ring_write(struct file *file,
+                const char __user *buffer, size_t count, loff_t *pos)
+{
+        return init_tcp_ring(file, buffer, count, pos);
+}
+
 static ssize_t maio_mtrx_write(struct file *file,
                 const char __user *buffer, size_t count, loff_t *pos)
 {
@@ -1696,6 +1933,12 @@ static ssize_t maio_enable_write(struct file *file,
                 const char __user *buffer, size_t count, loff_t *pos)
 {
         return maio_enable(file, buffer, count, pos);
+}
+
+static ssize_t maio_tcp_tx_write(struct file *file,
+			const char __user *buffer, size_t count, loff_t *pos)
+{
+        return maio_tcp_tx(file, buffer, count, pos);
 }
 
 static ssize_t maio_tx_write(struct file *file,
@@ -1768,6 +2011,14 @@ static const struct file_operations maio_mtrx_ops = {
         .write     = maio_mtrx_write,
 };
 
+static const struct file_operations maio_tcp_ring_ops = {
+        .open      = maio_map_open,
+        .read      = seq_read,
+        .llseek    = seq_lseek,
+        .release   = single_release,
+        .write     = maio_tcp_ring_write,
+};
+
 static const struct file_operations maio_page_0_ops = {
         .open      = maio_map_open, /* TODO: Change to func that pirnts the mapped user pages */
         .read      = seq_read,
@@ -1824,10 +2075,28 @@ static const struct file_operations maio_napi_ops = {
         .write     = maio_napi_write,
 };
 
+static const struct file_operations maio_tcp_create_fops = {
+        .open      = maio_map_open,
+        .read      = seq_read,
+        .llseek    = seq_lseek,
+        .release   = single_release,
+        .write     = maio_tcp_create_write,
+};
+
+static const struct file_operations maio_tcp_tx_ops = {
+        .open      = maio_map_open,
+        .read      = seq_read,
+        .llseek    = seq_lseek,
+        .release   = single_release,
+        .write     = maio_tcp_tx_write,
+};
+
 static inline void proc_init(void)
 {
 	reset_global_maio_state();
 	maio_dir = proc_mkdir_mode("maio", 00555, NULL);
+	maio_tcp_dir = proc_mkdir_mode("tcp", 00555, maio_dir);
+
 	proc_create_data("map", 00666, maio_dir, &maio_map_ops, NULL);
 	proc_create_data("stop", 00666, maio_dir, &maio_stop_ops, NULL);
 	proc_create_data("mtrx", 00666, maio_dir, &maio_mtrx_ops, NULL);
@@ -1837,6 +2106,11 @@ static inline void proc_init(void)
 	proc_create_data("tx", 00666, maio_dir, &maio_tx_ops, NULL);
 	proc_create_data("napi", 00666, maio_dir, &maio_napi_ops, NULL);
 	proc_create_data("version", 00444, maio_dir, &maio_version_fops, NULL );
+
+
+	proc_create_data("create", 00666, maio_tcp_dir, &maio_tcp_create_fops, NULL );
+	proc_create_data("tcp_tx", 00666, maio_tcp_dir, &maio_tcp_tx_ops, NULL);
+	proc_create_data("ring_setup", 00666, maio_tcp_dir, &maio_tcp_ring_ops, NULL);
 }
 
 static __init int maio_init(void)

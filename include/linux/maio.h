@@ -47,6 +47,10 @@ extern struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
 #define MAIO_PAGE_RX   0x200   // alloced from magz - usualy RX
 #define MAIO_PAGE_USER 0x100   // page in user space control
 /*************************************************/
+/******** MAIO TCP SOCK BUFFER STATE FLAGS ****************/
+#define MAIO_KERNEL_BUFFER	0x1
+#define MAIO_BAD_BUFFER		0x2
+#define MAIO_SMD_FREE		0x4
 
 
 /* Current mem layout
@@ -57,6 +61,13 @@ extern struct user_matrix *global_maio_matrix[MAX_DEV_NUM];
 
 #define MAIO_POISON 		(0xFEA20FDAU)
 #define MAIO_STATUS_VLAN_VALID 	(0x1)
+
+struct sock_md {
+	u64 uaddr;
+	u32 len; //8 lsb state: 24 size
+	u16 state;
+	u16 flags;
+};
 
 struct io_md {
 	u64 state;
@@ -123,9 +134,17 @@ struct net_device;
 
 struct maio_tx_thread {
 	struct task_struct *thread;
-	struct net_device *netdev;
+	union {
+		struct net_device *netdev;
+		struct socket 	  *socket;
+	};
+
 	unsigned long tx_counter;
-        u64 *tx_ring;
+	union {
+		u64 		*tx_ring;
+		struct sock_md 	*smd_ring;
+	};
+
 	u32 tx_sz;
 	u32 dev_idx;
 	u32 ring_id;

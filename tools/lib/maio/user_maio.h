@@ -2,7 +2,7 @@
 #define   __USER_MAIO__
 
 //#define NR_PAGES (1536ULL)
-#define NR_PAGES (256ULL)
+#define NR_PAGES (512ULL)
 #define HP_SIZE (1<<21)	//2MB Files
 #define FILE_NAME "/mnt/huge/hugepagefile"
 #define LENGTH (NR_PAGES * HP_SIZE)

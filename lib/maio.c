@@ -1130,6 +1130,9 @@ int maio_post_tx_tcp_page(void *state)
 			tcp_ring_next(tx_thread);
 			continue;
 		}
+
+		set_page_state(page, MAIO_PAGE_TX);
+
 		page_ref_inc(page);
 		smd->flags |= next_valid_tcp_entry(tx_thread) ? 0 : MSG_SENDPAGE_NOTLAST;
 #ifndef min

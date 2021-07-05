@@ -170,17 +170,45 @@ static inline struct io_md* page2io_md(struct page *page)
 */
 }
 
-static inline void set_page_state(struct page *page, u64 new_state)
+struct ext_state {
+	uint64_t	state;
+};
+
+static inline u64 *page2ext_state(struct page *page)
+{
+	struct page *head = __compound_head(page);
+	uint32_t idx = (page_address(page) >> PAGE_SHIFT) & (512-1);
+	u64 	*state = page_address(head);
+
+	return  &state[idx];
+}
+
+static inline void __set_page_state_external(struct page *page, u64 new_state)
+{
+	struct ext_state *md = page2ext_state(page);
+	md->state = new_state;
+}
+
+static inline u64 __get_page_state_internal(struct page *page)
+{
+	struct ext_state *md = page2ext_state(page);
+	return md->state;
+}
+
+static inline void __set_page_state_internel(struct page *page, u64 new_state)
 {
 	struct io_md *md = page2io_md(page);
 	md->state = new_state;
 }
 
-static inline u64 get_page_state(struct page *page)
+static inline u64 __get_page_state_internal(struct page *page)
 {
 	struct io_md *md = page2io_md(page);
 	return md->state;
 }
+
+#define set_page_state	__set_page_state_external
+#define get_page_state	__get_page_state_external
 
 static inline void flush_all_mtts(void)
 {
@@ -963,7 +991,7 @@ int maio_post_tx_page(void *state)
 			if (PageHead(page)) {
 				void *buff;
 
-				set_maio_is_io(page);
+				//set_maio_is_io(page);
 				set_page_state(page, MAIO_POISON); // Need to add on NEW USER pages.
 
 				page = maio_alloc_page();
@@ -1382,7 +1410,7 @@ static int maio_post_napi_page(struct maio_tx_thread *tx_thread/*, struct napi_s
 			if (PageHead(page)) {
 				void *buff;
 
-				set_maio_is_io(page);
+				//set_maio_is_io(page);
 				set_page_state(page, MAIO_POISON); // Need to add on NEW USER pages.
 
 				page = maio_alloc_page();
@@ -1639,7 +1667,7 @@ static inline ssize_t maio_add_pages_0(struct file *file, const char __user *buf
 			//trace_debug("[%ld]Caching %llx [%llx]  - P %llx[%d]\n", len, (u64 )kbase, meta->bufs[len],
 			//	(u64)page, page_ref_count(page));
 			//maio_cache_head(page);
-			set_maio_is_io(page);
+			//set_maio_is_io(page);
 			set_page_state(page, MAIO_POISON); // Need to add on NEW USER pages.
 			assert(!is_maio_page(page));
 			//memset(page_address(page), 0, PAGE_SIZE);

@@ -174,13 +174,13 @@ struct ext_state {
 	uint64_t	state;
 };
 
-static inline u64 *page2ext_state(struct page *page)
+static inline struct ext_state *page2ext_state(struct page *page)
 {
-	struct page *head = __compound_head(page);
-	uint32_t idx = (page_address(page) >> PAGE_SHIFT) & (512-1);
+	struct page *head = __compound_head(page, 0);
+	uint32_t idx = ((u64)page_address(page) >> PAGE_SHIFT) & (512-1);
 	u64 	*state = page_address(head);
 
-	return  &state[idx];
+	return  (struct ext_state *)&state[idx];
 }
 
 static inline void __set_page_state_external(struct page *page, u64 new_state)
@@ -189,7 +189,7 @@ static inline void __set_page_state_external(struct page *page, u64 new_state)
 	md->state = new_state;
 }
 
-static inline u64 __get_page_state_internal(struct page *page)
+static inline u64 __get_page_state_external(struct page *page)
 {
 	struct ext_state *md = page2ext_state(page);
 	return md->state;
@@ -397,6 +397,11 @@ static inline void put_buffers(void *elem, u16 order)
 	maio_free_elem(elem, order);
 }
 
+// TODO:
+//	1. merge page/frag free (USER_LOCK branch)
+//	2. put_buffers obviously on USER_LOCK
+//	3. for TCP PAGE_FREE only makes sense if we upade TCP completion sock_zerocopy_callback
+//	4. currently supporting only single send instance per page both DPDK and TCP
 void maio_page_free(struct page *page)
 {
 	/* Need to make sure we dont get only head pages here...*/
@@ -410,7 +415,9 @@ void maio_page_free(struct page *page)
 	assert(get_page_state(page) & MAIO_PAGE_IO);
 
 	set_page_state(page, MAIO_PAGE_FREE);
-	put_buffers(page_address(page), get_maio_elem_order(page));
+
+//	put_buffers(page_address(page), get_maio_elem_order(page));
+
 	return;
 }
 EXPORT_SYMBOL(maio_page_free);
@@ -439,7 +446,8 @@ void maio_frag_free(void *addr)
 	}
 	assert(get_page_state(page) & MAIO_PAGE_IO);
 	set_page_state(page, MAIO_PAGE_FREE);
-	put_buffers(page_address(page), get_maio_elem_order(page));
+
+//	put_buffers(page_address(page), get_maio_elem_order(page));
 
 	return;
 }

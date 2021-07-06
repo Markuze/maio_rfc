@@ -1795,7 +1795,7 @@ static ssize_t maio_tcp_create_write(struct file *file, const char __user *buffe
 	if (IS_ERR(kbuff))
 	        return PTR_ERR(kbuff);
 
-	ip	= simple_strtoull(kbuff, &cur, 10);
+	ip	= simple_strtoul(kbuff, &cur, 10);
 	port	= simple_strtol(cur + 1, &cur, 10);
 	pr_err("%s:Got:%pI4  port %d]\n", __FUNCTION__, &ip, port);
 	kfree(kbuff);

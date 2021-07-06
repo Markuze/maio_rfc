@@ -32,7 +32,7 @@
 		*cb to create heap -- return heap instead of fd*
 
 */
-static int init_hp_memory(char *name, void **base_addr, int nr_pages)
+static int __init_hp_memory(char *name, void **base_addr, int nr_pages)
 {
 	int fd, map_proc, len;
 	char write_buffer[WRITE_BUFF_LEN] = {0};
@@ -132,7 +132,7 @@ void *alloc_chunk(struct page_cache *cache)
 	return buffer;
 }
 
-struct page_cache *heap_from_hp_memory(void *base, int nr_pages)
+static struct page_cache *heap_from_hp_memory(void *base, int nr_pages)
 {
 	struct page_cache cache  = {0};
 
@@ -142,6 +142,15 @@ struct page_cache *heap_from_hp_memory(void *base, int nr_pages)
 	while (nr_pages--) {
 		add_2MB_HP(&cache, base);
 	}
+}
+
+struct page_cache *init_hp_memory(int nr_pages)
+{
+	void *base;
+	struct page_cache *cache;
+	int hp_fd = __init_hp_memory(NULL, &base, nr_pages);
+
+	cache = heap_from_hp_memory(base, NR_PAGES);
 }
 
 int init_tcp_ring(int idx, struct page_cache *cache)
@@ -167,11 +176,10 @@ int init_tcp_ring(int idx, struct page_cache *cache)
 	return 0;
 }
 
-int create_connected_socket(struct page_cache *cache, uint32_t ip, uint16_t port)
+int create_connected_socket(uint32_t ip, uint16_t port)
 {
 	int sock_fd, len, idx;
 	char write_buffer[WRITE_BUFF_LEN] = {0};
-	void *ring = alloc_chunk(cache);
 
 	if ((sock_fd = open(TCP_SOCK_PROC_NAME, O_RDWR)) < 0) {
 		printf("Failed to init internals %d\n", __LINE__);

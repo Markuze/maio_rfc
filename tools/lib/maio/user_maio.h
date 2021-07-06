@@ -32,4 +32,11 @@ struct page_cache {
 	int fd;					//fd of the hp file desctiptor
 };
 
+
+int create_connected_socket(uint32_t ip, uint16_t port);
+int init_tcp_ring(int idx, struct page_cache *cache);
+struct page_cache *init_hp_memory(int nr_pages);
+
+void *alloc_chunk(struct page_cache *cache);
+void *alloc_page(struct page_cache *cache);
 #endif /*__USER_MAIO__*/

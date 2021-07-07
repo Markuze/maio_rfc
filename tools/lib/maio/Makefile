@@ -8,3 +8,6 @@ DEPS=user_maio.h
 
 maio_tcp_tx_client: maio_lib.o maio_tcp_tx_client.o
 	$(CC) -o maio_tcp_tx_client maio_lib.o maio_tcp_tx_client.o
+
+clean:
+	rm -f *.o

@@ -23,6 +23,8 @@
 
 #define WRITE_BUFF_LEN 64
 
+#define MAX_TCP_THREADS 16
+static struct ring_md ring_md[MAX_TCP_THREADS];
 /*
 	Allocate HP Memory
 		name: file name for hugepagefile
@@ -40,13 +42,13 @@ static int __init_hp_memory(char *name, void **base_addr, int nr_pages)
 	/* create hp file */
 	fd  = open(FILE_NAME, O_CREAT | O_RDWR, 0755);
 	if (fd < 0) {
-		perror("Open failed");
-		return fd;
+		perror("Open failed (please use sudo)");
+		exit -1;
 	}
 
 	/* mmap hp file */
 	*base_addr = mmap(ADDR, LENGTH, PROTECTION, FLAGS, fd, 0);
-	if (base_addr == MAP_FAILED) {
+	if (*base_addr == MAP_FAILED) {
 		printf("Error Mapping %llu [%llu]\n", LENGTH, NR_PAGES);
 		perror("mmap");
 		unlink(FILE_NAME);
@@ -60,7 +62,7 @@ static int __init_hp_memory(char *name, void **base_addr, int nr_pages)
         }
 
         printf(">>> base_addr %p len %lld [2MB pages]\n", *base_addr, NR_PAGES);
-        len  = snprintf(write_buffer, 64, "%llx %llu\n", (unsigned long long)base_addr, NR_PAGES);
+        len  = snprintf(write_buffer, 64, "%llx %llu\n", (unsigned long long)*base_addr, NR_PAGES);
         len = write(map_proc, write_buffer, len);
 
         printf(">>> Sent %s [2MB = %x]\n", write_buffer, (1<<21));
@@ -70,7 +72,7 @@ static int __init_hp_memory(char *name, void **base_addr, int nr_pages)
 	return fd;
 }
 
-static inline void add_2MB_HP(struct page_cache *cache, void *addr)
+static inline int add_2MB_HP(struct page_cache *cache, void *addr)
 {
 	static int	quiet;
 	int i;
@@ -79,12 +81,12 @@ static inline void add_2MB_HP(struct page_cache *cache, void *addr)
 
 	if (((uint64_t)addr) & HP_MASK) {
 		printf("(%s)Error bad address given %p\n", __FUNCTION__, addr);
-		return;
+		return -1;
 	}
 
 	if (!quiet) {
 		quiet = 1;
-		printf("nr_chunks = %ld log_step %ld chunk_size %dkb", nr_chunks, chunk_log_step, (1 << chunk_log_step) >> 10);
+		printf("nr_chunks = %ld log_step %ld chunk_size %d KB\n", nr_chunks, chunk_log_step, (1 << chunk_log_step) >> 10);
 	}
 
 	//head page is not used for I/O. It holds the external page state
@@ -102,6 +104,7 @@ static inline void add_2MB_HP(struct page_cache *cache, void *addr)
 		list->next = cache->comp_page_list;
 		cache->comp_page_list = list;
 	}
+	return 0;
 }
 
 void *alloc_page(struct page_cache *cache)
@@ -135,13 +138,20 @@ void *alloc_chunk(struct page_cache *cache)
 static struct page_cache *heap_from_hp_memory(void *base, int nr_pages)
 {
 	struct page_cache cache  = {0};
+	struct page_cache *new;
+
 
 	cache.chunk_sz 		= 4;
 	cache.chunk_log 	= 2;
 
 	while (nr_pages--) {
-		add_2MB_HP(&cache, base);
+		if (add_2MB_HP(&cache, base))
+			return NULL;
 	}
+	new = alloc_page(&cache);
+	memcpy(new, &cache, sizeof(struct page_cache));
+
+	return new;
 }
 
 struct page_cache *init_hp_memory(int nr_pages)
@@ -157,14 +167,15 @@ int init_tcp_ring(int idx, struct page_cache *cache)
 {
 	int ring_fd, len;
 	char write_buffer[WRITE_BUFF_LEN] = {0};
-	void *ring = alloc_chunk(cache);
+	struct ring_md *ring = &ring_md[idx];
+	void *buffer = alloc_chunk(cache);
 
 	if ((ring_fd = open(TCP_RING_PROC_NAME, O_RDWR)) < 0) {
 		printf("Failed to init internals %d\n", __LINE__);
 		return -ENODEV;
         }
 
-	len  = snprintf(write_buffer, WRITE_BUFF_LEN, "%llx %u %d\n", (unsigned long long)ring,
+	len  = snprintf(write_buffer, WRITE_BUFF_LEN, "%llx %u %d\n", (unsigned long long)buffer,
 						(cache->chunk_sz << PAGE_SHIFT),
 						idx);
 
@@ -173,6 +184,20 @@ int init_tcp_ring(int idx, struct page_cache *cache)
 
 	if (len != len)
 		printf("ERROR [%d] writing to %s\n", len, TCP_RING_PROC_NAME);
+
+	if ((ring_fd = open(TCP_TX_PROC_NAME, O_RDWR)) < 0) {
+		printf("Failed to init internals %d\n", __LINE__);
+		return -ENODEV;
+        }
+
+	/*TODO: This FD is for ALL sockets its dumb to open it here and keep in specific context */
+	ring->fd 	= ring_fd;
+	ring->tx_idx	= idx;
+	ring->ring_sz	= (cache->chunk_sz << PAGE_SHIFT)/sizeof(struct sock_md);
+	ring->sock_md	= buffer;
+	ring->batch_count = 0;
+
+	memset(buffer, 0, (cache->chunk_sz << PAGE_SHIFT));
 	return 0;
 }
 
@@ -197,3 +222,27 @@ int create_connected_socket(uint32_t ip, uint16_t port)
 
 }
 
+#define IDK_RANDOM_MAGIC_NUMBER	32
+#define valid_entry(md)	((md)->sock_md[(md)->tx_idx  & ((md)->ring_sz -1)].state != MAIO_KERNEL_BUFFER)
+#define ring_entry(md)	&((md)->sock_md[(md)->tx_idx  & ((md)->ring_sz -1)])
+int send_buffer(int idx, void *buffer, int len, int more)
+{
+	char write_buffer[WRITE_BUFF_LEN] = {0};
+	struct ring_md *ring = &ring_md[idx];
+
+	if (valid_entry(ring)) {
+		struct sock_md *md = ring_entry(ring);
+
+		md->uaddr	= (uint64_t)buffer;
+		md->len 	= len;
+		md->state	= MAIO_KERNEL_BUFFER;
+		++(ring->batch_count);
+	} else
+		return -EAGAIN;
+
+	if (!more || ring->batch_count >= IDK_RANDOM_MAGIC_NUMBER) {
+		len  = snprintf(write_buffer, WRITE_BUFF_LEN, "%d\n", idx);
+		write(ring->fd, write_buffer, len);
+	}
+	return 0;
+}

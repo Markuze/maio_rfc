@@ -32,10 +32,32 @@ struct page_cache {
 	int fd;					//fd of the hp file desctiptor
 };
 
+struct ring_md {
+	int fd;					//fd of the ring file desctiptor
+	int batch_count;
+	uint32_t tx_idx;
+	uint32_t ring_sz;
+	struct sock_md *sock_md;
+};
+
+/****************** Kernel Structs **************************/
+#define MAIO_KERNEL_BUFFER      0x1
+#define MAIO_BAD_BUFFER         0x2
+#define MAIO_SMD_FREE           0x4
+
+struct sock_md {
+        uint64_t uaddr;
+        uint32_t len; //8 lsb state: 24 size
+        uint16_t state;
+        uint16_t flags;
+};
+/************************************************************/
 
 int create_connected_socket(uint32_t ip, uint16_t port);
 int init_tcp_ring(int idx, struct page_cache *cache);
 struct page_cache *init_hp_memory(int nr_pages);
+
+int send_buffer(int idx, void *buffer, int len, int more);
 
 void *alloc_chunk(struct page_cache *cache);
 void *alloc_page(struct page_cache *cache);

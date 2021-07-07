@@ -11,19 +11,24 @@ int main(void)
 	uint32_t dip = STR_IP(10,5,3,4);
 	uint32_t port = 5559;
 
-	int idx, len;
+	int idx, len = 0, i, slen = 0;
 	void *cache = init_hp_memory(PAGE_CNT);
 	char *buffer = alloc_page(cache);
 
 	printf("init memory and get page %p\n", buffer);
-	len = snprintf(buffer, 64, "Hello MAIO!\n");
 
 	idx = create_connected_socket(dip, port);
 	printf("Connected maio sock =%d\n", idx);
 	init_tcp_ring(idx, cache);
 
+	len = slen = snprintf(buffer, 64, "Hello Hello MAIO!\n");
 	printf("sending [%s]\n", buffer);
+
 	send_buffer(idx, buffer, len, 0);
 
+	for (i = 0; i < 8; i++) {
+		len = snprintf(&buffer[len], 64, "Hello Hello MAIO!\n");
+		send_buffer(idx, &buffer[len], slen, 0);
+	}
 	return 0;
 }

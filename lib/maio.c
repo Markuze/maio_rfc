@@ -477,6 +477,7 @@ void maio_frag_free(void *addr)
 	assert(get_page_state(page) & MAIO_PAGE_IO);
 	set_page_state(page, MAIO_PAGE_FREE);
 
+	pr_err("%s: %llx\n", __FUNCTION__, (u64)page);
 //	put_buffers(page_address(page), get_maio_elem_order(page));
 
 	return;
@@ -1190,6 +1191,7 @@ int maio_post_tx_tcp_page(void *state)
 			flags |= (size) ? MSG_SENDPAGE_NOTLAST : 0;
 			pr_err("[%d]sending page[%d] off %x bytes %ld [%x]\n", smp_processor_id(), page_ref_count(page), off, bytes, flags);
 			tcp_sendpage(tx_thread->socket->sk, page, off, bytes, flags);
+			page_ref_dec(page);
 			page++;
 			kaddr = page_address(page);
 

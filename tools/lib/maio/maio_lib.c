@@ -222,9 +222,17 @@ int create_connected_socket(uint32_t ip, uint16_t port)
 
 }
 
+static inline void dump_sock_md(struct sock_md *md, int idx)
+{
+	printf("sock_md[%d]: uaddr %lu len %u state/flags [%u|%u]\n",
+		idx, md->uaddr, md->len, md->state, md->flags);
+}
+
 #define IDK_RANDOM_MAGIC_NUMBER	32
 #define valid_entry(md)	((md)->sock_md[(md)->tx_idx  & ((md)->ring_sz -1)].state != MAIO_KERNEL_BUFFER)
 #define ring_entry(md)	&((md)->sock_md[(md)->tx_idx  & ((md)->ring_sz -1)])
+#define dump_current_smd(md) dump_sock_md(ring_entry(md), (md)->tx_idx  & ((md)->ring_sz -1));
+
 int send_buffer(int idx, void *buffer, int len, int more)
 {
 	char write_buffer[WRITE_BUFF_LEN] = {0};
@@ -236,13 +244,19 @@ int send_buffer(int idx, void *buffer, int len, int more)
 		md->uaddr	= (uint64_t)buffer;
 		md->len 	= len;
 		md->state	= MAIO_KERNEL_BUFFER;
+		dump_current_smd(ring);
 		++(ring->batch_count);
-	} else
+		++(ring->tx_idx);
+	} else {
+		printf("check ur macros...\n");
 		return -EAGAIN;
+	}
 
 	if (!more || ring->batch_count >= IDK_RANDOM_MAGIC_NUMBER) {
 		len  = snprintf(write_buffer, WRITE_BUFF_LEN, "%d\n", idx);
 		write(ring->fd, write_buffer, len);
+	} else {
+		printf("batching\n");
 	}
 	return 0;
 }

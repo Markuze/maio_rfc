@@ -170,6 +170,36 @@ static inline struct io_md* page2io_md(struct page *page)
 */
 }
 
+/*
+ * The task state array is a strange "bitmap" of
+ * reasons to sleep. Thus "running" is zero, and
+ * you can test for combinations of others with
+ * simple bit tests.
+ *
+ * Credit: fs/proc/array.c
+ */
+static const char * const task_state_array[] = {
+
+	/* states in TASK_REPORT: */
+	"R (running)",		/* 0x00 */
+	"S (sleeping)",		/* 0x01 */
+	"D (disk sleep)",	/* 0x02 */
+	"T (stopped)",		/* 0x04 */
+	"t (tracing stop)",	/* 0x08 */
+	"X (dead)",		/* 0x10 */
+	"Z (zombie)",		/* 0x20 */
+	"P (parked)",		/* 0x40 */
+
+	/* states beyond TASK_REPORT: */
+	"I (idle)",		/* 0x80 */
+};
+
+static inline const char *get_task_state(struct task_struct *tsk)
+{
+	BUILD_BUG_ON(1 + ilog2(TASK_REPORT_MAX) != ARRAY_SIZE(task_state_array));
+	return task_state_array[task_state_index(tsk)];
+}
+
 struct ext_state {
 	uint64_t	state;
 };
@@ -1097,7 +1127,14 @@ int maio_post_tx_page(void *state)
 	return cnt;
 }
 
-#define valid_tcp_entry(qp) 		((qp)->smd_ring[(qp)->tx_counter & ((qp)->tx_sz -1)].state == MAIO_KERNEL_BUFFER)
+static inline int dump_sock_md(struct sock_md *md, int idx)
+{
+        pr_err("sock_md[%d]: uaddr %llx len %u state/flags [%u|%u]\n",
+                idx, md->uaddr, md->len, md->state, md->flags);
+	return 1;
+}
+#define dump_current_smd(qp) 		dump_sock_md(tcp_ring_entry(qp), (qp)->tx_counter  & ((qp)->tx_sz -1))
+#define valid_tcp_entry(qp) 		(dump_current_smd((qp)) && ((qp)->smd_ring[(qp)->tx_counter & ((qp)->tx_sz -1)].state == MAIO_KERNEL_BUFFER))
 #define next_valid_tcp_entry(qp) 	((qp)->smd_ring[((qp)->tx_counter + 1) & ((qp)->tx_sz -1)].state == MAIO_KERNEL_BUFFER)
 #define tcp_ring_entry(qp) 		&(qp)->smd_ring[(qp)->tx_counter & ((qp)->tx_sz -1)]
 #define tcp_ring_next(qp) 		++((qp)->tx_counter)
@@ -1116,8 +1153,6 @@ int maio_post_tx_tcp_page(void *state)
 		/*TODO: u kinda should check if kaddr is legal */
 		struct page     *page	= virt_to_page(kaddr);
 
-		advance_tx_ring(tx_thread);
-
 		if (unlikely(IS_ERR_OR_NULL(kaddr))) {
 			trace_printk("Invalid kaddr %llx from user %llx\n", (u64)kaddr, (u64)smd->uaddr);
 			pr_err("Invalid kaddr %llx from user %llx\n", (u64)kaddr, (u64)smd->uaddr);
@@ -1125,12 +1160,6 @@ int maio_post_tx_tcp_page(void *state)
 			smd->flags = __LINE__;
 			tcp_ring_next(tx_thread);
 			continue;
-		}
-
-		if (unlikely(page_ref_count(page))) {
-			pr_err("TX] Zero fefcount page %llx[%d] addr %llx -- reseting \n",
-				(u64)page, page_ref_count(page), smd->uaddr);
-			panic("Illegal page state\n");
 		}
 
 		if (unlikely(!is_maio_page(page))) {
@@ -1159,7 +1188,7 @@ int maio_post_tx_tcp_page(void *state)
 			page_ref_inc(page);
 
 			flags |= (size) ? MSG_SENDPAGE_NOTLAST : 0;
-			pr_err("sending page off %x bytes %ld [%x]\n", off, bytes, flags);
+			pr_err("[%d]sending page[%d] off %x bytes %ld [%x]\n", smp_processor_id(), page_ref_count(page), off, bytes, flags);
 			tcp_sendpage(tx_thread->socket->sk, page, off, bytes, flags);
 			page++;
 			kaddr = page_address(page);
@@ -1173,7 +1202,7 @@ int maio_post_tx_tcp_page(void *state)
 		++cnt;
 	}
 
-	pr_err("Sent %d valid smd\n", cnt);
+	pr_err("[%d]Sent %d valid smd\n", smp_processor_id(), cnt);
 	return cnt;
 }
 
@@ -1248,7 +1277,9 @@ static inline ssize_t maio_tcp_tx(struct file *file, const char __user *buf,
 	if (thread->state & TASK_NORMAL) {
 	        val = wake_up_process(thread);
 	        trace_debug("[%d]wake up thread[state %0lx][%s]\n", smp_processor_id(), thread->state, val ? "WAKING":"UP");
-	        pr_err("[%d]wake up thread[state %0lx][%s]\n", smp_processor_id(), thread->state, val ? "WAKING":"UP");
+	        pr_err("[%d]wake up thread[state %s][%s]\n", smp_processor_id(), get_task_state(thread), val ? "WAKING":"UP");
+	} else {
+	        pr_err("[%d] skipping [state %s]\n", smp_processor_id(), get_task_state(thread));
 	}
 
 	return size;
@@ -1297,7 +1328,7 @@ static int maio_post_tx_tcp_task(void *state)
 
         while (!kthread_should_stop()) {
 		trace_debug("[%d]Running...\n", smp_processor_id());
-		while (maio_post_tx_tcp_page(state) == TX_BATCH_SIZE); // XMIT as long as there is work to be done.
+		while (maio_post_tx_tcp_page(state)); // XMIT as long as there is work to be done.
 
 		trace_debug("[%d]sleeping...\n", smp_processor_id());
                 set_current_state(TASK_UNINTERRUPTIBLE);
@@ -1314,7 +1345,7 @@ static int maio_post_tx_task(void *state)
 
         while (!kthread_should_stop()) {
 		trace_debug("[%d]Running...\n", smp_processor_id());
-		while (maio_post_tx_page(state) == TX_BATCH_SIZE); // XMIT as long as there is work to be done.
+		while (maio_post_tx_page(state)); // XMIT as long as there is work to be done.
 
 		trace_debug("[%d]sleeping...\n", smp_processor_id());
                 set_current_state(TASK_UNINTERRUPTIBLE);

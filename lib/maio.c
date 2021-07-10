@@ -446,6 +446,7 @@ void maio_page_free(struct page *page)
 
 	set_page_state(page, MAIO_PAGE_FREE);
 
+	pr_err("%s: %llx\n", __FUNCTION__, (u64)page);
 //	put_buffers(page_address(page), get_maio_elem_order(page));
 
 	return;
@@ -1189,7 +1190,8 @@ int maio_post_tx_tcp_page(void *state)
 			page_ref_inc(page);
 
 			flags |= (size) ? MSG_SENDPAGE_NOTLAST : 0;
-			pr_err("[%d]sending page[%d] off %x bytes %ld [%x]\n", smp_processor_id(), page_ref_count(page), off, bytes, flags);
+			pr_err("[%d]sending page[%llx:%d] off %x bytes %ld [%x]\n",
+				smp_processor_id(), (u64)page, page_ref_count(page), off, bytes, flags);
 			tcp_sendpage(tx_thread->socket->sk, page, off, bytes, flags);
 			page_ref_dec(page);
 			page++;
@@ -1246,6 +1248,30 @@ static inline ssize_t maio_tx(struct file *file, const char __user *buf,
 	//maio_post_tx_page((void *)idx);
 
 	return size;
+}
+
+static inline ssize_t maio_get_page_rc(struct file *file, const char __user *buf,
+					    size_t size, loff_t *_pos)
+{
+	char	kbuff[MAIO_TX_KBUFF_SZ], *cur;
+	u64	uaddr;
+	void 	*kaddr;
+	struct page *page;
+
+	if (unlikely(size < 1 || size >= MAIO_TX_KBUFF_SZ))
+	        return -EINVAL;
+
+	if (copy_from_user(kbuff, buf, size)) {
+		return -EFAULT;
+	}
+
+	uaddr = simple_strtoull(kbuff, &cur, 16);
+
+	kaddr = uaddr2addr(uaddr);
+	page = virt_to_page(kaddr);
+
+	pr_err("%s:Got:uaddr %llx :%d: state %llx\n", __FUNCTION__, uaddr, page_ref_count(page), get_page_state(page));
+	return page_ref_count(page);
 }
 
 static inline ssize_t maio_tcp_tx(struct file *file, const char __user *buf,
@@ -2083,6 +2109,7 @@ static const struct file_operations maio_version_fops = {
         .open           = maio_version_open,
         .read           = seq_read,
         .release        = single_release,
+        .write     	= maio_get_page_rc,
 };
 
 static const struct file_operations maio_mtrx_ops = {
@@ -2188,6 +2215,7 @@ static inline void proc_init(void)
 	proc_create_data("tx", 00666, maio_dir, &maio_tx_ops, NULL);
 	proc_create_data("napi", 00666, maio_dir, &maio_napi_ops, NULL);
 	proc_create_data("version", 00444, maio_dir, &maio_version_fops, NULL );
+	proc_create_data("get_state", 00444, maio_dir, &maio_version_fops, NULL );
 
 
 	proc_create_data("create", 00666, maio_tcp_dir, &maio_tcp_create_fops, NULL );

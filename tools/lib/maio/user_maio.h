@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #define MAP_PROC_NAME		"/proc/maio/map"
+#define STATE_PROC_NAME		"/proc/maio/get_state"
 #define TCP_RING_PROC_NAME	"/proc/maio/tcp/ring_setup"
 #define TCP_SOCK_PROC_NAME	"/proc/maio/tcp/create"
 #define TCP_TX_PROC_NAME	"/proc/maio/tcp/tcp_tx"
@@ -34,6 +35,7 @@ struct page_cache {
 
 struct ring_md {
 	int fd;					//fd of the ring file desctiptor
+	int state_fd;				//fd for the get_state
 	int batch_count;
 	uint32_t tx_idx;
 	uint32_t ring_sz;
@@ -61,4 +63,6 @@ int send_buffer(int idx, void *buffer, int len, int more);
 
 void *alloc_chunk(struct page_cache *cache);
 void *alloc_page(struct page_cache *cache);
+
+int get_state(void *, int idx);
 #endif /*__USER_MAIO__*/

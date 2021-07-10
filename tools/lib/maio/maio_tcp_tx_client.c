@@ -5,6 +5,8 @@ An example of creating a TCP socket and sending Zero-Copy I/O
 #include <stdio.h>
 #include "user_maio.h"
 
+#include <unistd.h>
+
 #define PAGE_CNT	512
 int main(void)
 {
@@ -29,7 +31,7 @@ int main(void)
 	init_tcp_ring(idx, cache);
 
 	len = slen = snprintf(buffer, 64, "Hello Hello MAIO!!");
-	printf("sending [%s]\n", buffer);
+	printf("sending [%s:%d]\n", buffer, get_state(buffer, idx));
 
 	/* send buffer */
 	send_buffer(idx, buffer, len, 0);
@@ -39,5 +41,8 @@ int main(void)
 		len = snprintf(&buffer[len], 64, "Hello Hello MAIO!!");
 		send_buffer(idx, &buffer[len], slen, 0);
 	}
+	printf("sent [%s:%d]\n", buffer, get_state(buffer, idx));
+	sleep(1);
+	printf("sent [%s:%d]\n", buffer, get_state(buffer, idx));
 	return 0;
 }

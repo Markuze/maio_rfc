@@ -165,7 +165,7 @@ struct page_cache *init_hp_memory(int nr_pages)
 
 int init_tcp_ring(int idx, struct page_cache *cache)
 {
-	int ring_fd, len;
+	int ring_fd, state_fd, len;
 	char write_buffer[WRITE_BUFF_LEN] = {0};
 	struct ring_md *ring = &ring_md[idx];
 	void *buffer = alloc_chunk(cache);
@@ -190,8 +190,14 @@ int init_tcp_ring(int idx, struct page_cache *cache)
 		return -ENODEV;
         }
 
+	if ((state_fd = open(STATE_PROC_NAME, O_RDWR)) < 0) {
+		printf("Failed to init internals %d\n", __LINE__);
+		return -ENODEV;
+        }
+
 	/*TODO: This FD is for ALL sockets its dumb to open it here and keep in specific context */
 	ring->fd 	= ring_fd;
+	ring->state_fd 	= state_fd;
 	ring->tx_idx	= idx;
 	ring->ring_sz	= (cache->chunk_sz << PAGE_SHIFT)/sizeof(struct sock_md);
 	ring->sock_md	= buffer;
@@ -259,4 +265,14 @@ int send_buffer(int idx, void *buffer, int len, int more)
 		printf("batching\n");
 	}
 	return 0;
+}
+
+int get_state(void *uaddr, int idx)
+{
+	int len;
+	struct ring_md *ring = &ring_md[idx];
+	char write_buffer[WRITE_BUFF_LEN] = {0};
+
+	len  = snprintf(write_buffer, WRITE_BUFF_LEN, "%p\n", uaddr);
+	return write(ring->state_fd, write_buffer, len);
 }

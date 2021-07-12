@@ -7,7 +7,7 @@
 #include <arpa/inet.h>
 
 #define MAX (16<<12)
-#define PORT 8080
+#define PORT 5558
 #define SA struct sockaddr
 
 char buff[MAX];
@@ -38,7 +38,8 @@ int main()
 
         // assign IP, PORT
         servaddr.sin_family = AF_INET;
-        servaddr.sin_addr.s_addr = inet_addr("10.128.0.3");
+        //servaddr.sin_addr.s_addr = inet_addr("10.128.0.3");
+        servaddr.sin_addr.s_addr = inet_addr("10.5.3.4");
         servaddr.sin_port = htons(PORT);
 
         // connect the client socket to server socket

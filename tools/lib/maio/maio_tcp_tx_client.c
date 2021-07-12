@@ -36,7 +36,7 @@ int main(void)
 	slen = (4 << 12);
 	printf("send loop [%d]\n", slen);
 	while (1) {
-		send_buffer(idx, chunk[0], slen, 0);
+		send_buffer(idx, chunk[0], slen, 1);
 	};
 
 	return 0;

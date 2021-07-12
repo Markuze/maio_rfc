@@ -234,7 +234,7 @@ static inline void dump_sock_md(struct sock_md *md, int idx)
 		idx, md->uaddr, md->len, md->state, md->flags);
 }
 
-#define IDK_RANDOM_MAGIC_NUMBER	32
+#define IDK_RANDOM_MAGIC_NUMBER	(128 << 10) //128KB
 #define valid_entry(md)	((md)->sock_md[(md)->tx_idx  & ((md)->ring_sz -1)].state != MAIO_KERNEL_BUFFER)
 #define ring_entry(md)	&((md)->sock_md[(md)->tx_idx  & ((md)->ring_sz -1)])
 #define dump_current_smd(md) dump_sock_md(ring_entry(md), (md)->tx_idx  & ((md)->ring_sz -1));
@@ -252,7 +252,7 @@ int send_buffer(int idx, void *buffer, int len, int more)
 		md->len 	= len;
 		md->state	= MAIO_KERNEL_BUFFER;
 		//dump_current_smd(ring);
-		++(ring->batch_count);
+		ring->batch_count += len;
 		++(ring->tx_idx);
 	} else {
 		//printf("check ur macros...\n");
@@ -260,8 +260,10 @@ int send_buffer(int idx, void *buffer, int len, int more)
 	}
 
 	if (!more || ring->batch_count >= IDK_RANDOM_MAGIC_NUMBER) {
+		//printf("sending %dKB\n", ring->batch_count >> 10);
 		len  = snprintf(write_buffer, WRITE_BUFF_LEN, "%d %d\n", idx, (rc) ? 1 : 0);
 		write(ring->fd, write_buffer, len);
+		ring->batch_count = 0;
 	}
 	return rc;
 }

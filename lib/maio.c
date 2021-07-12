@@ -1206,6 +1206,11 @@ int maio_post_tx_tcp_page(void *state)
 		++cnt;
 	}
 
+	if (!completion_done(&tx_thread->completion)) {
+		trace_printk("waiking completion...\n");
+		complete(&tx_thread->completion);
+	}
+
 	trace_debug("[%d]Sent %d valid smd\n", smp_processor_id(), cnt);
 	return cnt;
 }
@@ -1280,7 +1285,7 @@ static inline ssize_t maio_tcp_tx(struct file *file, const char __user *buf,
 	char	kbuff[MAIO_TX_KBUFF_SZ], *cur;
 	struct maio_tx_thread *tx_thread;
 	struct task_struct *thread;
-	size_t 	sock_idx;
+	size_t 	sock_idx, sleep;
 	unsigned long  val;
 
 	if (unlikely(size < 1 || size >= MAIO_TX_KBUFF_SZ))
@@ -1291,7 +1296,8 @@ static inline ssize_t maio_tcp_tx(struct file *file, const char __user *buf,
 	}
 
 	sock_idx = simple_strtoull(kbuff, &cur, 10);
-	trace_debug("%s:Got:sock %ld]\n", __FUNCTION__, sock_idx);
+	sleep = simple_strtoull(cur + 1, &cur, 10);
+	trace_printk("%s:Got:sock %ld] %s\n", __FUNCTION__, sock_idx, sleep ? "Sleep": "");
 
 	if (likely(sock_idx > MAX_TCP_THREADS))
 	        return -EINVAL;
@@ -1302,10 +1308,20 @@ static inline ssize_t maio_tcp_tx(struct file *file, const char __user *buf,
 	if (unlikely(!thread))
 	        return -EINVAL;
 
+	// if will be less efficient than just the reinit call
+	reinit_completion(&tx_thread->completion);
+
 	if (thread->state & TASK_NORMAL) {
 	        val = wake_up_process(thread);
 	        trace_debug("[%d]wake up thread[state %0lx][%s]\n", smp_processor_id(), thread->state, val ? "WAKING":"UP");
 	}
+
+	if (sleep) {
+		trace_printk("waiting for completion...\n");
+		wait_for_completion_interruptible(&tx_thread->completion);
+		trace_printk("done...\n");
+	}
+
 	return size;
 }
 
@@ -1839,6 +1855,7 @@ static inline int alloc_tcp_tx_thread(struct socket *socket)
 	tcp_threads[id].socket = socket;
 	tcp_threads[id].dev_idx = curr_tcp_id;
 
+	init_completion(&tcp_threads[id].completion);
 
 	tcp_threads[id].tx_sz = 1024;
 	return id;

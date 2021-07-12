@@ -243,6 +243,7 @@ int send_buffer(int idx, void *buffer, int len, int more)
 {
 	char write_buffer[WRITE_BUFF_LEN] = {0};
 	struct ring_md *ring = &ring_md[idx];
+	int rc = 0;
 
 	if (valid_entry(ring)) {
 		struct sock_md *md = ring_entry(ring);
@@ -255,16 +256,14 @@ int send_buffer(int idx, void *buffer, int len, int more)
 		++(ring->tx_idx);
 	} else {
 		//printf("check ur macros...\n");
-		return -EAGAIN;
+		rc = -EAGAIN;
 	}
 
 	if (!more || ring->batch_count >= IDK_RANDOM_MAGIC_NUMBER) {
-		len  = snprintf(write_buffer, WRITE_BUFF_LEN, "%d\n", idx);
+		len  = snprintf(write_buffer, WRITE_BUFF_LEN, "%d %d\n", idx, (rc) ? 1 : 0);
 		write(ring->fd, write_buffer, len);
-	} else {
-		printf("batching\n");
 	}
-	return 0;
+	return rc;
 }
 
 int get_state(void *uaddr, int idx)

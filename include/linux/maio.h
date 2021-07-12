@@ -3,7 +3,7 @@
 
 #include <linux/magazine.h>
 #include <linux/rbtree.h>
-
+#include <linux/completion.h>
 //#include <linux/netdevice.h> //net_device
 
 #define NUM_MAIO_SIZES	1
@@ -145,6 +145,7 @@ struct maio_tx_thread {
 		struct sock_md 	*smd_ring;
 	};
 
+	struct completion	completion;
 	u32 tx_sz;
 	u32 dev_idx;
 	u32 ring_id;

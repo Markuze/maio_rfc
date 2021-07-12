@@ -446,7 +446,7 @@ void maio_page_free(struct page *page)
 
 	set_page_state(page, MAIO_PAGE_FREE);
 
-	pr_err("%s: %llx\n", __FUNCTION__, (u64)page);
+	trace_printk("%s: %llx\n", __FUNCTION__, (u64)page);
 //	put_buffers(page_address(page), get_maio_elem_order(page));
 
 	return;
@@ -478,7 +478,7 @@ void maio_frag_free(void *addr)
 	assert(get_page_state(page) & MAIO_PAGE_IO);
 	set_page_state(page, MAIO_PAGE_FREE);
 
-	pr_err("%s: %llx\n", __FUNCTION__, (u64)page);
+	trace_printk("%s: %llx\n", __FUNCTION__, (u64)page);
 //	put_buffers(page_address(page), get_maio_elem_order(page));
 
 	return;
@@ -1136,7 +1136,7 @@ static inline int dump_sock_md(struct sock_md *md, int idx)
 	return 1;
 }
 #define dump_current_smd(qp) 		dump_sock_md(tcp_ring_entry(qp), (qp)->tx_counter  & ((qp)->tx_sz -1))
-#define valid_tcp_entry(qp) 		(dump_current_smd((qp)) && ((qp)->smd_ring[(qp)->tx_counter & ((qp)->tx_sz -1)].state == MAIO_KERNEL_BUFFER))
+#define valid_tcp_entry(qp) 		((qp)->smd_ring[(qp)->tx_counter & ((qp)->tx_sz -1)].state == MAIO_KERNEL_BUFFER)
 #define next_valid_tcp_entry(qp) 	((qp)->smd_ring[((qp)->tx_counter + 1) & ((qp)->tx_sz -1)].state == MAIO_KERNEL_BUFFER)
 #define tcp_ring_entry(qp) 		&(qp)->smd_ring[(qp)->tx_counter & ((qp)->tx_sz -1)]
 #define tcp_ring_next(qp) 		++((qp)->tx_counter)
@@ -1146,7 +1146,7 @@ int maio_post_tx_tcp_page(void *state)
 	struct maio_tx_thread *tx_thread = state;
 	int cnt = 0;
 
-	pr_err("[%s]%d Starting\n", __FUNCTION__, smp_processor_id());
+	trace_debug("[%s]%d Starting\n", __FUNCTION__, smp_processor_id());
 
 	while (valid_tcp_entry(tx_thread)) {
 		unsigned size;
@@ -1190,7 +1190,7 @@ int maio_post_tx_tcp_page(void *state)
 			page_ref_inc(page);
 
 			flags |= (size) ? MSG_SENDPAGE_NOTLAST : 0;
-			pr_err("[%d]sending page[%llx:%d] off %x bytes %ld [%x]\n",
+			trace_printk("[%d]sending page[%llx:%d] off %x bytes %ld [%x]\n",
 				smp_processor_id(), (u64)page, page_ref_count(page), off, bytes, flags);
 			tcp_sendpage(tx_thread->socket->sk, page, off, bytes, flags);
 			page_ref_dec(page);
@@ -1206,7 +1206,7 @@ int maio_post_tx_tcp_page(void *state)
 		++cnt;
 	}
 
-	pr_err("[%d]Sent %d valid smd\n", smp_processor_id(), cnt);
+	trace_debug("[%d]Sent %d valid smd\n", smp_processor_id(), cnt);
 	return cnt;
 }
 
@@ -1291,7 +1291,7 @@ static inline ssize_t maio_tcp_tx(struct file *file, const char __user *buf,
 	}
 
 	sock_idx = simple_strtoull(kbuff, &cur, 10);
-	pr_err("%s:Got:sock %ld]\n", __FUNCTION__, sock_idx);
+	trace_debug("%s:Got:sock %ld]\n", __FUNCTION__, sock_idx);
 
 	if (likely(sock_idx > MAX_TCP_THREADS))
 	        return -EINVAL;
@@ -1305,11 +1305,7 @@ static inline ssize_t maio_tcp_tx(struct file *file, const char __user *buf,
 	if (thread->state & TASK_NORMAL) {
 	        val = wake_up_process(thread);
 	        trace_debug("[%d]wake up thread[state %0lx][%s]\n", smp_processor_id(), thread->state, val ? "WAKING":"UP");
-	        pr_err("[%d]wake up thread[state %s][%s]\n", smp_processor_id(), get_task_state(thread), val ? "WAKING":"UP");
-	} else {
-	        pr_err("[%d] skipping [state %s]\n", smp_processor_id(), get_task_state(thread));
 	}
-
 	return size;
 }
 

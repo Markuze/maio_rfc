@@ -8,6 +8,9 @@ An example of creating a TCP socket and sending Zero-Copy I/O
 #include <unistd.h>
 
 #define PAGE_CNT	512
+
+void *chunk[1024];
+
 int main(void)
 {
 	uint32_t dip = STR_IP(10,5,3,4);
@@ -17,11 +20,7 @@ int main(void)
 
 	/* Init Mem*/
 	void *cache = init_hp_memory(PAGE_CNT);
-
-	/* Alloc page*/
-	char *buffer = alloc_page(cache);
-
-	printf("init memory and get page %p\n", buffer);
+	printf("init memory and get page %p\n", cache);
 
 	/* create + connect */
 	idx = create_connected_socket(dip, port);
@@ -30,19 +29,15 @@ int main(void)
 	/* init ring */
 	init_tcp_ring(idx, cache);
 
-	len = slen = snprintf(buffer, 64, "Hello Hello MAIO!!");
-	printf("sending [%s:%d]\n", buffer, get_state(buffer, idx));
+	/* prep mem for I/O */
 
-	/* send buffer */
-	send_buffer(idx, buffer, len, 0);
+	chunk[0] = alloc_chunk(cache);
 
-	printf("send loop\n");
-	for (i = 0; i < 8; i++) {
-		len = snprintf(&buffer[len], 64, "Hello Hello MAIO!!");
-		send_buffer(idx, &buffer[len], slen, 0);
-	}
-	printf("sent [%s:%d]\n", buffer, get_state(buffer, idx));
-	sleep(1);
-	printf("sent [%s:%d]\n", buffer, get_state(buffer, idx));
+	slen = (4 << 12);
+	printf("send loop [%d]\n", slen);
+	while (1) {
+		send_buffer(idx, chunk[0], slen, 0);
+	};
+
 	return 0;
 }

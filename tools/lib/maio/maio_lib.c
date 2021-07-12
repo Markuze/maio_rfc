@@ -250,11 +250,11 @@ int send_buffer(int idx, void *buffer, int len, int more)
 		md->uaddr	= (uint64_t)buffer;
 		md->len 	= len;
 		md->state	= MAIO_KERNEL_BUFFER;
-		dump_current_smd(ring);
+		//dump_current_smd(ring);
 		++(ring->batch_count);
 		++(ring->tx_idx);
 	} else {
-		printf("check ur macros...\n");
+		//printf("check ur macros...\n");
 		return -EAGAIN;
 	}
 

@@ -1190,7 +1190,7 @@ int maio_post_tx_tcp_page(void *state)
 			page_ref_inc(page);
 
 			flags |= (size) ? MSG_SENDPAGE_NOTLAST : 0;
-			trace_printk("[%d]sending page[%llx:%d] off %x bytes %ld [%x]\n",
+			trace_debug("[%d]sending page[%llx:%d] off %x bytes %ld [%x]\n",
 				smp_processor_id(), (u64)page, page_ref_count(page), off, bytes, flags);
 			tcp_sendpage(tx_thread->socket->sk, page, off, bytes, flags);
 			page_ref_dec(page);
@@ -1207,7 +1207,6 @@ int maio_post_tx_tcp_page(void *state)
 	}
 
 	if (!completion_done(&tx_thread->completion)) {
-		trace_printk("waiking completion...\n");
 		complete(&tx_thread->completion);
 	}
 
@@ -1297,7 +1296,7 @@ static inline ssize_t maio_tcp_tx(struct file *file, const char __user *buf,
 
 	sock_idx = simple_strtoull(kbuff, &cur, 10);
 	sleep = simple_strtoull(cur + 1, &cur, 10);
-	trace_printk("%s:Got:sock %ld] %s\n", __FUNCTION__, sock_idx, sleep ? "Sleep": "");
+	trace_debug("%s:Got:sock %ld] %s\n", __FUNCTION__, sock_idx, sleep ? "Sleep": "");
 
 	if (likely(sock_idx > MAX_TCP_THREADS))
 	        return -EINVAL;
@@ -1317,9 +1316,7 @@ static inline ssize_t maio_tcp_tx(struct file *file, const char __user *buf,
 	}
 
 	if (sleep) {
-		trace_printk("waiting for completion...\n");
 		wait_for_completion_interruptible(&tx_thread->completion);
-		trace_printk("done...\n");
 	}
 
 	return size;

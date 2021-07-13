@@ -165,7 +165,8 @@ struct page_cache *init_hp_memory(int nr_pages)
 
 int init_tcp_ring(int idx, struct page_cache *cache)
 {
-	int ring_fd, state_fd, len;
+	static int ring_fd, state_fd;
+	int len;
 	char write_buffer[WRITE_BUFF_LEN] = {0};
 	struct ring_md *ring = &ring_md[idx];
 	void *buffer = alloc_chunk(cache);
@@ -182,20 +183,23 @@ int init_tcp_ring(int idx, struct page_cache *cache)
 	len = write(ring_fd, write_buffer, len);
 	close(ring_fd);
 
+	printf("%s: [%d] %d %d\n", __FUNCTION__, idx, ring_fd, state_fd);
 	if (len != len)
 		printf("ERROR [%d] writing to %s\n", len, TCP_RING_PROC_NAME);
 
-	if ((ring_fd = open(TCP_TX_PROC_NAME, O_RDWR)) < 0) {
-		printf("Failed to init internals %d\n", __LINE__);
-		return -ENODEV;
-        }
+	if (!ring_fd) {
+		if ((ring_fd = open(TCP_TX_PROC_NAME, O_RDWR)) < 0) {
+			printf("Failed to init internals %d\n", __LINE__);
+			return -ENODEV;
+		}
+	}
+	if (!state_fd) {
+		if ((state_fd = open(STATE_PROC_NAME, O_RDWR)) < 0) {
+			printf("Failed to init internals %d\n", __LINE__);
+			return -ENODEV;
+		}
+	}
 
-	if ((state_fd = open(STATE_PROC_NAME, O_RDWR)) < 0) {
-		printf("Failed to init internals %d\n", __LINE__);
-		return -ENODEV;
-        }
-
-	/*TODO: This FD is for ALL sockets its dumb to open it here and keep in specific context */
 	ring->fd 	= ring_fd;
 	ring->state_fd 	= state_fd;
 	ring->tx_idx	= idx;
@@ -274,6 +278,7 @@ int get_state(void *uaddr, int idx)
 	struct ring_md *ring = &ring_md[idx];
 	char write_buffer[WRITE_BUFF_LEN] = {0};
 
+	printf("get satte %p [%d]\n", uaddr, idx);
 	len  = snprintf(write_buffer, WRITE_BUFF_LEN, "%p\n", uaddr);
 	return write(ring->state_fd, write_buffer, len);
 }

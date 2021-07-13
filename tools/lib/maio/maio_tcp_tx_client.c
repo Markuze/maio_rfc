@@ -30,7 +30,6 @@ int main(void)
 	init_tcp_ring(idx, cache);
 
 	/* prep mem for I/O */
-
 	chunk[0] = alloc_chunk(cache);
 
 	slen = (4 << 12);

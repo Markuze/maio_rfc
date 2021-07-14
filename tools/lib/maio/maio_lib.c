@@ -205,7 +205,7 @@ int init_tcp_ring(int idx, struct page_cache *cache)
 
 	ring->fd 	= tx_fd;
 	ring->state_fd 	= state_fd;
-	ring->tx_idx	= idx;
+	ring->tx_idx	= 0;
 	ring->ring_sz	= (cache->chunk_sz << PAGE_SHIFT)/sizeof(struct sock_md);
 	ring->sock_md	= buffer;
 	ring->batch_count = 0;

@@ -85,7 +85,7 @@ static inline int add_2MB_HP(struct page_cache *cache, void *addr)
 	}
 
 	if (!quiet) {
-		quiet = 1;
+		//quiet = 1;
 		printf("nr_chunks = %ld log_step %ld chunk_size %d KB\n", nr_chunks, chunk_log_step, (1 << chunk_log_step) >> 10);
 	}
 
@@ -104,6 +104,8 @@ static inline int add_2MB_HP(struct page_cache *cache, void *addr)
 		list->next = cache->comp_page_list;
 		cache->comp_page_list = list;
 	}
+	printf("cache %p [page list %p] [comp list %p] [%d|%d|%d]\n", cache,
+		cache->page_list, cache->comp_page_list, cache->chunk_sz, cache->chunk_log, cache->fd);
 	return 0;
 }
 
@@ -139,14 +141,16 @@ static struct page_cache *heap_from_hp_memory(void *base, int nr_pages)
 {
 	struct page_cache cache  = {0};
 	struct page_cache *new;
+	unsigned long offset = 0;
 
 
 	cache.chunk_sz 		= 4;
 	cache.chunk_log 	= 2;
 
 	while (nr_pages--) {
-		if (add_2MB_HP(&cache, base))
+		if (add_2MB_HP(&cache, base + offset))
 			return NULL;
+		offset += (1<<21);
 	}
 	new = alloc_page(&cache);
 	memcpy(new, &cache, sizeof(struct page_cache));

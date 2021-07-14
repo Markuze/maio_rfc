@@ -3,20 +3,20 @@ An example of creating a TCP socket and sending Zero-Copy I/O
 ***/
 
 #include <stdio.h>
-#include "user_maio.h"
-
+#include <stdlib.h>
 #include <unistd.h>
+#include "user_maio.h"
 
 #define PAGE_CNT	512
 
-void *chunk[1024];
+static void *chunk[2048];
 
 int main(void)
 {
 	uint32_t dip = STR_IP(10,5,3,4);
 	uint32_t port = 5559;
 
-	int idx, idx2, len = 0, i, slen = 0;
+	int idx, idx2, len = 0, i, j, slen = 0;
 
 	/* Init Mem*/
 	void *cache = init_hp_memory(PAGE_CNT);
@@ -34,7 +34,13 @@ int main(void)
 	init_tcp_ring(idx2, cache);
 
 	/* prep mem for I/O */
-	chunk[0] = alloc_chunk(cache);
+	for (j = 0; j < 2048; j++) {
+		chunk[j] = alloc_chunk(cache);
+		if (!chunk[j]) {
+			printf("Failed to alloc chunk %d\n", j);
+			exit(-1);
+		}
+	}
 
 	slen = (4 << 12);
 	printf("send loop [%d]\n", slen);

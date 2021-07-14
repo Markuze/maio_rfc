@@ -165,8 +165,9 @@ struct page_cache *init_hp_memory(int nr_pages)
 
 int init_tcp_ring(int idx, struct page_cache *cache)
 {
-	static int ring_fd, state_fd;
+	static int tx_fd, state_fd;
 	int len;
+	int ring_fd;
 	char write_buffer[WRITE_BUFF_LEN] = {0};
 	struct ring_md *ring = &ring_md[idx];
 	void *buffer = alloc_chunk(cache);
@@ -183,12 +184,12 @@ int init_tcp_ring(int idx, struct page_cache *cache)
 	len = write(ring_fd, write_buffer, len);
 	close(ring_fd);
 
-	printf("%s: [%d] %d %d\n", __FUNCTION__, idx, ring_fd, state_fd);
+	printf("%s: [%d] ring fd %d state  %d\n", __FUNCTION__, idx, tx_fd, state_fd);
 	if (len != len)
 		printf("ERROR [%d] writing to %s\n", len, TCP_RING_PROC_NAME);
 
-	if (!ring_fd) {
-		if ((ring_fd = open(TCP_TX_PROC_NAME, O_RDWR)) < 0) {
+	if (!tx_fd) {
+		if ((tx_fd = open(TCP_TX_PROC_NAME, O_RDWR)) < 0) {
 			printf("Failed to init internals %d\n", __LINE__);
 			return -ENODEV;
 		}
@@ -200,7 +201,9 @@ int init_tcp_ring(int idx, struct page_cache *cache)
 		}
 	}
 
-	ring->fd 	= ring_fd;
+	printf("%s: [%d] ring fd %d state  %d\n", __FUNCTION__, idx, tx_fd, state_fd);
+
+	ring->fd 	= tx_fd;
 	ring->state_fd 	= state_fd;
 	ring->tx_idx	= idx;
 	ring->ring_sz	= (cache->chunk_sz << PAGE_SHIFT)/sizeof(struct sock_md);
@@ -247,7 +250,7 @@ int send_buffer(int idx, void *buffer, int len, int more)
 {
 	char write_buffer[WRITE_BUFF_LEN] = {0};
 	struct ring_md *ring = &ring_md[idx];
-	int rc = 0;
+	int rc = 0, send = !more;
 
 	if (valid_entry(ring)) {
 		struct sock_md *md = ring_entry(ring);
@@ -259,11 +262,17 @@ int send_buffer(int idx, void *buffer, int len, int more)
 		ring->batch_count += len;
 		++(ring->tx_idx);
 	} else {
-		//printf("check ur macros...\n");
+		//printf("sleeping %u\n", ring->tx_idx);
 		rc = -EAGAIN;
 	}
 
-	if (!more || ring->batch_count >= IDK_RANDOM_MAGIC_NUMBER) {
+/*
+	if (!(ring->tx_idx & 0xfffff)) {
+		printf("tx_idx %u\n", ring->tx_idx);
+	}
+*/
+	send |= !!rc;
+	if (send || ring->batch_count >= IDK_RANDOM_MAGIC_NUMBER) {
 		//printf("sending %dKB\n", ring->batch_count >> 10);
 		len  = snprintf(write_buffer, WRITE_BUFF_LEN, "%d %d\n", idx, (rc) ? 1 : 0);
 		write(ring->fd, write_buffer, len);

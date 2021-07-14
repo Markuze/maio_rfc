@@ -1190,7 +1190,7 @@ int maio_post_tx_tcp_page(void *state)
 			page_ref_inc(page);
 
 			flags |= (size) ? MSG_SENDPAGE_NOTLAST : 0;
-			trace_printk("[%d:%d]sending page[%llx:%d] off %x bytes %ld [%x]\n",
+			trace_debug("[%d:%d]sending page[%llx:%d] off %x bytes %ld [%x]\n",
 				smp_processor_id(), tx_thread->ring_id, (u64)page, page_ref_count(page), off, bytes, flags);
 			tcp_sendpage(tx_thread->socket->sk, page, off, bytes, flags);
 			page_ref_dec(page);
@@ -1202,6 +1202,9 @@ int maio_post_tx_tcp_page(void *state)
 		smd->state = MAIO_SMD_FREE;
 		tcp_ring_next(tx_thread);
 
+		if (unlikely(!(tx_thread->tx_counter & 0xfffff)))
+			trace_printk("%s counter %lu\n", __FUNCTION__, tx_thread->tx_counter);
+
 		show_io(kaddr, "TX");
 		++cnt;
 	}
@@ -1210,7 +1213,7 @@ int maio_post_tx_tcp_page(void *state)
 		complete(&tx_thread->completion);
 	}
 
-	trace_printk("[%d:%d]Sent %d valid smd\n", tx_thread->ring_id, smp_processor_id(), cnt);
+	trace_debug("[%d:%d]Sent %d valid smd\n", tx_thread->ring_id, smp_processor_id(), cnt);
 	return cnt;
 }
 
@@ -1272,6 +1275,11 @@ static inline ssize_t maio_get_page_rc(struct file *file, const char __user *buf
 	uaddr = simple_strtoull(kbuff, &cur, 16);
 
 	kaddr = uaddr2addr(uaddr);
+	if (IS_ERR_VALUE(kaddr)) {
+		pr_err("%s:Got: BAD uaddr %llx\n", __FUNCTION__, uaddr);
+		return (unsigned long)kaddr;
+	}
+
 	page = virt_to_page(kaddr);
 
 	pr_err("%s:Got:uaddr %llx :%d: state %llx\n", __FUNCTION__, uaddr, page_ref_count(page), get_page_state(page));
@@ -1287,6 +1295,8 @@ static inline ssize_t maio_tcp_tx(struct file *file, const char __user *buf,
 	size_t 	sock_idx, sleep;
 	unsigned long  val;
 
+//	static unsigned long  poll;
+
 	if (unlikely(size < 1 || size >= MAIO_TX_KBUFF_SZ))
 	        return -EINVAL;
 
@@ -1296,8 +1306,14 @@ static inline ssize_t maio_tcp_tx(struct file *file, const char __user *buf,
 
 	sock_idx = simple_strtoull(kbuff, &cur, 10);
 	sleep = simple_strtoull(cur + 1, &cur, 10);
-	trace_printk("%s:Got:sock %ld] %s\n", __FUNCTION__, sock_idx, sleep ? "Sleep": "");
-
+#if 0
+	if (sleep) {
+		trace_printk("%s:Got:sock %ld] %s (%lu)\n", __FUNCTION__, sock_idx, "Sleep", poll);
+		poll = 0;
+	} else {
+		++poll;
+	}
+#endif
 	if (likely(sock_idx > MAX_TCP_THREADS))
 	        return -EINVAL;
 
@@ -1312,7 +1328,7 @@ static inline ssize_t maio_tcp_tx(struct file *file, const char __user *buf,
 
 	if (thread->state & TASK_NORMAL) {
 	        val = wake_up_process(thread);
-	        trace_printk("[%d]wake up thread[state %0lx][%s]\n", smp_processor_id(), thread->state, val ? "WAKING":"UP");
+	        trace_debug("[%d]wake up thread[state %0lx][%s]\n", smp_processor_id(), thread->state, val ? "WAKING":"UP");
 	}
 
 	if (sleep) {

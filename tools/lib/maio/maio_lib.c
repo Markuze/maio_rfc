@@ -165,6 +165,7 @@ struct page_cache *init_hp_memory(int nr_pages)
 	int hp_fd = __init_hp_memory(NULL, &base, nr_pages);
 
 	cache = heap_from_hp_memory(base, NR_PAGES);
+	return cache;
 }
 
 int init_tcp_ring(int idx, struct page_cache *cache)
